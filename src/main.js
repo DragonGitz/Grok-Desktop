@@ -726,6 +726,125 @@ function setupIpcHandlers() {
 } 
 
 // Enable context menus across the app (window and webviews)
+// ---- New-tab dropdown: New Chat / Grok Bot / Build CLI -------------------
+// Small JSON settings file in userData (Build CLI pinned + recent folders).
+const settingsPath = () => path.join(app.getPath('userData'), 'grok-desktop-settings.json');
+function readSettings() {
+  try { return JSON.parse(fs.readFileSync(settingsPath(), 'utf8')) || {}; } catch (_) { return {}; }
+}
+function writeSettings(patch) {
+  try { fs.writeFileSync(settingsPath(), JSON.stringify({ ...readSettings(), ...patch }, null, 2)); } catch (_) {}
+}
+function whichSync(cmd) {
+  try {
+    const out = require('child_process').execFileSync(process.platform === 'win32' ? 'where' : 'which', [cmd],
+      { encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
+    return out.split(/\r?\n/).find(Boolean) || null;
+  } catch (_) { return null; }
+}
+const existsSafe = (p) => { try { return !!p && fs.existsSync(p); } catch (_) { return false; } };
+
+// Grok Bot desktop app: known install paths, else its registered grokbot:// protocol.
+function findGrokBot() {
+  const exe = process.platform === 'win32' ? 'Grok Bot.exe' : null;
+  const candidates = exe ? [
+    path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Grok Bot', exe),
+    path.join(process.env.LOCALAPPDATA || '', 'Programs', 'Grok Bot', exe)
+  ] : [];
+  const found = candidates.find(existsSafe);
+  if (found) return { exe: found };
+  try { if (app.getApplicationNameForProtocol('grokbot://')) return { protocol: 'grokbot://' }; } catch (_) {}
+  return null;
+}
+
+// Grok CLI: ~/.grok/bin/grok(.exe) (default installer location) or "grok" on PATH.
+function findGrokCli() {
+  const local = path.join(os.homedir(), '.grok', 'bin', process.platform === 'win32' ? 'grok.exe' : 'grok');
+  return existsSafe(local) ? local : whichSync('grok');
+}
+
+function launchCliIn(folder, cli) {
+  const { spawn } = require('child_process');
+  const opts = { cwd: folder, detached: true, stdio: 'ignore' };
+  try {
+    if (process.platform === 'win32') {
+      const wt = whichSync('wt');
+      if (wt) spawn(wt, ['-d', folder, cli], opts).unref();
+      else spawn('cmd.exe', ['/k', cli], { ...opts, windowsHide: false }).unref();
+    } else if (process.platform === 'darwin') {
+      spawn('open', ['-a', 'Terminal', folder], opts).unref();
+    } else {
+      spawn('x-terminal-emulator', ['-e', cli], opts).unref();
+    }
+  } catch (e) {
+    dialog.showErrorBox('Grok Desktop', 'Could not open a terminal: ' + e.message);
+  }
+}
+
+const MAX_RECENT = 15;
+const samePath = (a, b) => process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
+function buildFolders() {
+  const st = readSettings();
+  const pinned = Array.isArray(st.buildPinned) ? st.buildPinned : [];
+  const recent = (Array.isArray(st.buildRecent) ? st.buildRecent : [])
+    .filter(f => existsSafe(f) && !pinned.some(p => samePath(p, f)))
+    .slice(0, MAX_RECENT);
+  return { pinned, recent };
+}
+function saveFolders(pinned, recent) {
+  writeSettings({ buildPinned: pinned, buildRecent: recent.slice(0, MAX_RECENT) });
+}
+function touchRecent(folder) {
+  const { pinned, recent } = buildFolders();
+  saveFolders(pinned, [folder, ...recent.filter(f => !samePath(f, folder))]);
+}
+
+async function pickBuildFolder() {
+  const res = await dialog.showOpenDialog(mainWindow, {
+    title: 'Choose a folder for Grok Build CLI', properties: ['openDirectory', 'createDirectory'],
+    defaultPath: buildFolders().recent[0] || os.homedir()
+  });
+  return res.canceled || !res.filePaths[0] ? null : res.filePaths[0];
+}
+
+ipcMain.handle('show-new-tab-menu', (_event, pos) => {
+  if (!mainWindow) return;
+  const bot = findGrokBot();
+  const cli = findGrokCli();
+  const { pinned, recent } = buildFolders();
+  const open = (folder) => { touchRecent(folder); launchCliIn(folder, cli); };
+  const folderItem = (folder, isPinned) => {
+    const missing = !existsSafe(folder);
+    return {
+      label: `${path.basename(folder) || folder}  —  ${folder}${missing ? '  (missing)' : ''}`,
+      submenu: [
+        { label: 'Open', enabled: !missing, click: () => open(folder) },
+        isPinned
+          ? { label: 'Unpin', click: () => saveFolders(pinned.filter(p => !samePath(p, folder)), [folder, ...recent]) }
+          : { label: 'Pin', click: () => saveFolders([...pinned, folder], recent.filter(f => !samePath(f, folder))) },
+        {
+          label: 'Remove', click: () => saveFolders(pinned.filter(p => !samePath(p, folder)),
+            recent.filter(f => !samePath(f, folder)))
+        }
+      ]
+    };
+  };
+  const cliSubmenu = [
+    { label: 'New…', click: async () => { const f = await pickBuildFolder(); if (f) open(f); } },
+    ...(pinned.length ? [{ type: 'separator' }, ...pinned.map(f => folderItem(f, true))] : []),
+    ...(recent.length ? [{ type: 'separator' }, ...recent.map(f => folderItem(f, false))] : [])
+  ];
+  Menu.buildFromTemplate([
+    { label: 'New Chat', click: () => mainWindow.webContents.send('shortcut-new-tab') },
+    { type: 'separator' },
+    {
+      label: 'Open Grok Bot', visible: !!bot,
+      click: () => { bot.exe ? shell.openPath(bot.exe) : shell.openExternal(bot.protocol); }
+    },
+    cli ? { label: 'Build CLI', submenu: cliSubmenu } : { label: 'Build CLI (grok not found)', enabled: false }
+  ]).popup({ window: mainWindow, x: pos && Math.round(pos.x), y: pos && Math.round(pos.y) });
+});
+
 function setupContextMenus() {
   app.on('web-contents-created', (_event, contents) => {
     contents.on('context-menu', (event, params) => {

@@ -157,6 +157,17 @@
       color: var(--color-text);
     }
 
+    .new-tab-group {
+      display: flex;
+      align-items: center;
+    }
+
+    .new-tab-group .new-tab-menu-button {
+      font-size: 11px;
+      width: 18px;
+      margin-left: 0;
+    }
+
     .new-tab-button:hover {
       background-color: var(--color-hover);
     }
@@ -520,12 +531,25 @@
       createNewTabButton() {
         // Create the new tab button if it doesn't exist
         if (!this.newTabButton) {
-          this.newTabButton = document.createElement('button');
-          this.newTabButton.className = 'new-tab-button';
-          this.newTabButton.textContent = '+';
-          this.newTabButton.addEventListener('click', () => {
+          // "+" plus a Windows Terminal style dropdown (New Chat / Grok Bot / Build CLI)
+          this.newTabButton = document.createElement('div');
+          this.newTabButton.className = 'new-tab-group';
+          const plus = document.createElement('button');
+          plus.className = 'new-tab-button';
+          plus.textContent = '+';
+          plus.title = 'New chat';
+          plus.addEventListener('click', () => {
             this.createTab('https://grok.com');
           });
+          const menuBtn = document.createElement('button');
+          menuBtn.className = 'new-tab-button new-tab-menu-button';
+          menuBtn.textContent = '\u25BE';
+          menuBtn.title = 'More: Grok Bot, Build CLI';
+          menuBtn.addEventListener('click', () => {
+            const r = menuBtn.getBoundingClientRect();
+            ipcRenderer.invoke('show-new-tab-menu', { x: r.left, y: r.bottom });
+          });
+          this.newTabButton.append(plus, menuBtn);
         }
         
         // Add it to the tabs container
