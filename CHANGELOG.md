@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on Keep a Changelog, and this project adheres to Semantic Versioning.
 
 
+## [2.0.1] - 2026-10-16 (Dragonified fork)
+
+### Added
+- **Build CLI sessions** - the Build section lists your Grok CLI sessions (from ~/.grok/sessions, newest first, 10 recent plus pins) with title, folder and age; clicking resumes the session (`grok --resume <id>`) in an embedded terminal tab. The trash icon only hides an entry; CLI session files are never touched. Manually opened folders stay listed until they have a session.
+
+### Changed
+- Flyout rows use fixed shortcut/action columns; pin icons are always visible (grey / blue when pinned).
+
 ## [2.0.0] - 2026-10-16 (Dragonified fork)
 
 ### Added

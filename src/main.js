@@ -721,26 +721,71 @@ function launchCliIn(folder, cli) {
 
 const MAX_RECENT = 10;
 const samePath = (a, b) => process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// Grok CLI sessions: ~/.grok/sessions/<url-encoded cwd>/<session uuid>/summary.json
+// (only that small metadata file is read; the CLI's files are never modified).
+function listCliSessions() {
+  const root = path.join(os.homedir(), '.grok', 'sessions');
+  const out = [];
+  let dirs = [];
+  try { dirs = fs.readdirSync(root, { withFileTypes: true }).filter(d => d.isDirectory()); } catch (_) { return out; }
+  for (const d of dirs) {
+    let subs = [];
+    try { subs = fs.readdirSync(path.join(root, d.name), { withFileTypes: true }).filter(s => s.isDirectory() && UUID_RE.test(s.name)); } catch (_) { continue; }
+    for (const s of subs) {
+      try {
+        const j = JSON.parse(fs.readFileSync(path.join(root, d.name, s.name, 'summary.json'), 'utf8'));
+        const id = (j.info && j.info.id) || s.name;
+        let cwd = j.info && j.info.cwd;
+        if (!cwd) { try { cwd = decodeURIComponent(d.name); } catch (_) { continue; } }
+        if (!UUID_RE.test(id) || !cwd) continue;
+        out.push({
+          key: 's:' + id, sessionId: id, folder: cwd,
+          title: String(j.generated_title || j.session_summary || '').trim() || null,
+          updated: Date.parse(j.last_active_at || j.updated_at || j.created_at) || 0
+        });
+      } catch (_) { /* no or partial summary yet */ }
+    }
+  }
+  return out.sort((a, b) => b.updated - a.updated);
+}
+
+// Build CLI entries: CLI sessions plus manually opened folders that have no
+// session yet. Pins/hides are stored by key ("s:<id>" or "f:<folder>").
 function buildFolders() {
   const st = readSettings();
-  const pinned = Array.isArray(st.buildPinned) ? st.buildPinned : [];
-  const recent = (Array.isArray(st.buildRecent) ? st.buildRecent : [])
-    .filter(f => existsSafe(f) && !pinned.some(p => samePath(p, f)))
-    .slice(0, MAX_RECENT);
-  return { pinned, recent };
-}
-function saveFolders(pinned, recent) {
-  writeSettings({ buildPinned: pinned, buildRecent: recent.slice(0, MAX_RECENT) });
+  const recentFolders = Array.isArray(st.buildRecent) ? st.buildRecent : [];
+  const recentAt = st.buildRecentAt && typeof st.buildRecentAt === 'object' ? st.buildRecentAt : {};
+  // Migrate old folder pins
+  const pinKeys = Array.isArray(st.buildPinKeys) ? st.buildPinKeys
+    : (Array.isArray(st.buildPinned) ? st.buildPinned.map(f => 'f:' + f) : []);
+  const hidden = Array.isArray(st.buildHidden) ? st.buildHidden : [];
+  const sessions = listCliSessions();
+  const folders = recentFolders
+    .filter(f => !sessions.some(s => samePath(s.folder, f)) || pinKeys.includes('f:' + f))
+    .map(f => ({ key: 'f:' + f, sessionId: null, folder: f, title: null, updated: recentAt[f] || 0 }));
+  const all = [...sessions, ...folders]
+    .filter(e => !hidden.includes(e.key))
+    .map(e => ({ ...e, missing: !existsSafe(e.folder) }));
+  const pinned = pinKeys.map(k => all.find(e => e.key === k)).filter(Boolean).map(e => ({ ...e, pinned: true }));
+  const recent = all.filter(e => !pinKeys.includes(e.key) && !e.missing)
+    .sort((a, b) => b.updated - a.updated).slice(0, MAX_RECENT);
+  return { pinned, recent, pinKeys, hidden, recentFolders, recentAt };
 }
 function touchRecent(folder) {
-  const { pinned, recent } = buildFolders();
-  saveFolders(pinned, [folder, ...recent.filter(f => !samePath(f, folder))]);
+  const { recentFolders, recentAt } = buildFolders();
+  const list = [folder, ...recentFolders.filter(f => !samePath(f, folder))].slice(0, 30);
+  const at = {};
+  list.forEach(f => { at[f] = recentAt[f] || 0; });
+  at[folder] = Date.now();
+  writeSettings({ buildRecent: list, buildRecentAt: at });
 }
 
 async function pickBuildFolder() {
   const res = await dialog.showOpenDialog(mainWindow, {
     title: 'Choose a folder for Grok Build CLI', properties: ['openDirectory', 'createDirectory'],
-    defaultPath: buildFolders().recent[0] || os.homedir()
+    defaultPath: (buildFolders().recent[0] || {}).folder || os.homedir()
   });
   return res.canceled || !res.filePaths[0] ? null : res.filePaths[0];
 }
@@ -920,8 +965,7 @@ ipcMain.handle('new-tab-menu-data', async (_event, opts) => {
     cli: !!cli,
     pty: !!(pty && cli),
     pinned,
-    recent,
-    missing: pinned.filter(f => !existsSafe(f))
+    recent
   };
 });
 ipcMain.handle('open-grok-bot', () => {
@@ -933,21 +977,20 @@ ipcMain.handle('open-grok-bot', () => {
 ipcMain.handle('build-pick-folder', () => pickBuildFolder());
 ipcMain.handle('build-launch-external', (_event, folder) => {
   const cli = findGrokCli();
-  if (cli && existsSafe(folder)) launchCliIn(folder, cli);
+  if (cli && existsSafe(folder)) launchCliIn(folder, cli);  // external fallback starts a fresh session
 });
-ipcMain.handle('build-folders-update', (_event, { action, folder } = {}) => {
-  if (typeof folder !== 'string' || !folder) return buildFolders();
-  const { pinned, recent } = buildFolders();
-  const without = (list) => list.filter(f => !samePath(f, folder));
+ipcMain.handle('build-folders-update', (_event, { action, folder, key } = {}) => {
   if (action === 'touch') {
-    if (!pinned.some(p => samePath(p, folder))) saveFolders(pinned, [folder, ...without(recent)]);
-  } else if (action === 'pin') {
-    saveFolders([...without(pinned), folder], without(recent));
-  } else if (action === 'unpin') {
-    saveFolders(without(pinned), [folder, ...without(recent)]);
-  } else if (action === 'remove') {
-    saveFolders(without(pinned), without(recent));
+    if (typeof folder === 'string' && folder) touchRecent(folder);
+    return buildFolders();
   }
+  if (typeof key !== 'string' || !/^[sf]:/.test(key)) return buildFolders();
+  const { pinKeys, hidden } = buildFolders();
+  const without = (list) => list.filter(k => k !== key);
+  if (action === 'pin') writeSettings({ buildPinKeys: [...without(pinKeys), key] });
+  else if (action === 'unpin') writeSettings({ buildPinKeys: without(pinKeys) });
+  // "Remove" only hides the entry here; the CLI's session files are left alone
+  else if (action === 'remove') writeSettings({ buildPinKeys: without(pinKeys), buildHidden: [...without(hidden), key].slice(-500) });
   return buildFolders();
 });
 
@@ -956,7 +999,7 @@ let pty = null;
 try { pty = require('@lydell/node-pty'); } catch (e) { console.warn('Grok Desktop: node-pty unavailable, Build CLI opens externally:', e.message); }
 const ptys = new Map();
 let ptySeq = 0;
-ipcMain.handle('pty-spawn', (event, { cwd, cols, rows } = {}) => {
+ipcMain.handle('pty-spawn', (event, { cwd, cols, rows, sessionId } = {}) => {
   const cli = findGrokCli();
   if (!pty) return { error: 'terminal support (node-pty) is not available' };
   if (!cli) return { error: 'grok CLI not found' };
@@ -964,7 +1007,9 @@ ipcMain.handle('pty-spawn', (event, { cwd, cols, rows } = {}) => {
   const id = ++ptySeq;
   let p;
   try {
-    p = pty.spawn(cli, [], {
+    // Resume a saved CLI session by id (`grok --resume <uuid>` in its folder)
+    const args = sessionId && UUID_RE.test(sessionId) ? ['--resume', sessionId] : [];
+    p = pty.spawn(cli, args, {
       name: 'xterm-256color',
       cols: Math.max(20, cols | 0 || 80),
       rows: Math.max(5, rows | 0 || 24),

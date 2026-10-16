@@ -411,17 +411,21 @@
     .gd-row-label { flex: 1 1 auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .gd-row-label.bold { font-weight: 600; }
     .gd-row-shortcut { flex: 0 0 auto; color: #9d9d9d; font-size: 12px; padding-left: 16px; }
-    .gd-row-actions { display: inline-flex; gap: 2px; min-width: 0; }
-    .gd-row-actions:not(:empty) { margin-left: -4px; }
+    .gd-row-actions { display: inline-flex; gap: 2px; flex: 0 0 50px; justify-content: flex-start; }
+    .gd-row-shortcut { min-width: 96px; text-align: right; }
+    .gd-row-sub { display: block; font-size: 11px; color: #8a8a8a; overflow: hidden; text-overflow: ellipsis; }
+    .gd-row:has(.gd-row-sub) { height: 40px; }
     .gd-row-btn {
-      display: none;
+      display: inline-flex; color: #7a7a7a;
       width: 24px; height: 24px;
       align-items: center; justify-content: center;
       background: none; border: none; border-radius: 4px;
       color: #c8c8c8; cursor: pointer; padding: 0;
     }
-    .gd-row-btn.on { display: inline-flex; color: #60cdff; }
-    .gd-row:hover .gd-row-btn { display: inline-flex; }
+    .gd-row-btn.on { color: #60cdff; }
+    .gd-row-btn.hover, .gd-row-btn.spacer { visibility: hidden; }
+    .gd-row:hover .gd-row-btn.hover { visibility: visible; }
+    .gd-row-btn.spacer { cursor: default; }
     .gd-row-btn:hover { background: rgba(255, 255, 255, 0.1); color: #fff; }
     .gd-sep { height: 1px; margin: 4px 2px; background: rgba(255, 255, 255, 0.08); }
     .gd-header { padding: 6px 10px 2px; font-size: 11px; color: #9d9d9d; }
@@ -483,6 +487,14 @@
     };
     const gdIcon = (name) => `<svg class="gd-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${GD_ICONS[name] || ''}</svg>`;
     const gdEsc = (t) => String(t).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    const gdAgo = (t) => {
+      const m = Math.max(0, Math.round((Date.now() - t) / 60000));
+      if (m < 1) return 'just now';
+      if (m < 60) return `${m}m ago`;
+      if (m < 1440) return `${Math.round(m / 60)}h ago`;
+      if (m < 43200) return `${Math.round(m / 1440)}d ago`;
+      return new Date(t).toLocaleDateString();
+    };
     const gdBase = (p) => String(p).replace(/[\\/]+$/, '').split(/[\\/]/).pop() || p;
 
     // Windows Terminal style new-tab flyout: New Chat, Bots, Grok Bot app, Build CLI folders.
@@ -495,8 +507,7 @@
         const numbered = [];
         const openBuild = (folder) => this.openBuild(folder, data);
         (data.bots || []).forEach(b => numbered.push({ kind: 'bot', bot: b, run: () => tabManager.createTab(b.url) }));
-        (data.pinned || []).forEach(f => numbered.push({ kind: 'folder', folder: f, pinned: true, run: () => openBuild(f) }));
-        (data.recent || []).forEach(f => numbered.push({ kind: 'folder', folder: f, pinned: false, run: () => openBuild(f) }));
+        [...(data.pinned || []), ...(data.recent || [])].forEach(e => numbered.push({ kind: 'folder', entry: e, folder: e.folder, pinned: !!e.pinned, run: () => this.openEntry(e, data) }));
         // Bots 1-10: Ctrl+Shift+1..9,0 / Build folders 1-10: Ctrl+Shift+F1..F10
         numbered.filter(a => a.kind === 'bot').forEach((a, i) => { if (i < 10) a.shortcut = `Ctrl+Shift+${(i + 1) % 10}`; });
         numbered.filter(a => a.kind === 'folder').forEach((a, i) => { if (i < 10) a.shortcut = `Ctrl+Shift+F${i + 1}`; });
@@ -509,6 +520,13 @@
         else ipcRenderer.invoke('build-launch-external', folder);
       },
 
+      // Resume a CLI session (or start one in a manually added folder)
+      openEntry(e, data) {
+        if (!e.sessionId) return this.openBuild(e.folder, data);
+        if (data && data.pty) tabManager.createTerminalTab(e.folder, { sessionId: e.sessionId, title: e.title });
+        else ipcRenderer.invoke('build-launch-external', e.folder);
+      },
+
       async newBuild() {
         const data = await ipcRenderer.invoke('new-tab-menu-data', { fresh: false });
         if (!data.cli) return;
@@ -519,7 +537,7 @@
       async runIndex(kind, n) {
         const data = await ipcRenderer.invoke('new-tab-menu-data', { fresh: false });
         const a = this.buildActions(data).filter(x => x.kind === kind)[n - 1];
-        if (a && !(kind === 'folder' && (data.missing || []).includes(a.folder))) a.run();
+        if (a && !(kind === 'folder' && a.entry.missing)) a.run();
       },
 
       toggle(anchor) {
@@ -568,18 +586,20 @@
         if (!el) return;
         el.innerHTML = '';
         const actions = this.buildActions(data);
-        const row = ({ icon, iconHtml, label, shortcut, onClick, disabled, extras, title, bold }) => {
+        const row = ({ icon, iconHtml, label, sub, shortcut, onClick, disabled, extras, title, bold }) => {
           const r = document.createElement('div');
           r.className = 'gd-row' + (disabled ? ' disabled' : '');
           if (title) r.title = title;
           r.innerHTML = `<span class="gd-row-icon">${iconHtml || gdIcon(icon)}</span>` +
-            `<span class="gd-row-label${bold ? ' bold' : ''}">${gdEsc(label)}</span>` +
+            `<span class="gd-row-label${bold ? ' bold' : ''}">${gdEsc(label)}${sub ? `<span class="gd-row-sub">${gdEsc(sub)}</span>` : ''}</span>` +
             `<span class="gd-row-shortcut">${gdEsc(shortcut || '')}</span>` +
             `<span class="gd-row-actions"></span>`;
           const act = r.querySelector('.gd-row-actions');
-          (extras || []).forEach(x => {
+          // Fixed two action slots so shortcuts line up in every row
+          (extras || []).concat([{ spacer: true }, { spacer: true }]).slice(0, 2).forEach(x => {
+            if (x.spacer) { const sp = document.createElement('span'); sp.className = 'gd-row-btn spacer'; act.appendChild(sp); return; }
             const b = document.createElement('button');
-            b.className = 'gd-row-btn' + (x.on ? ' on' : '');
+            b.className = 'gd-row-btn' + (x.on ? ' on' : '') + (x.hover ? ' hover' : '');
             b.title = x.title;
             b.innerHTML = gdIcon(x.icon);
             b.addEventListener('click', (e) => { e.stopPropagation(); x.click(); });
@@ -616,22 +636,26 @@
         sep();
         header(data.cli ? 'Build CLI' : 'Build CLI (grok not found)');
         if (data.cli) {
-          const update = async (action, folder) => {
-            await ipcRenderer.invoke('build-folders-update', { action, folder });
+          const update = async (action, key) => {
+            await ipcRenderer.invoke('build-folders-update', { action, key });
             this.render(await ipcRenderer.invoke('new-tab-menu-data', { fresh: false }));
           };
           row({ icon: 'folderPlus', label: 'New…', shortcut: 'Ctrl+Shift+N', onClick: () => this.newBuild() });
           actions.filter(a => a.kind === 'folder').forEach(a => {
-            const missing = (data.missing || []).includes(a.folder);
+            const e = a.entry;
+            const name = e.title || gdBase(e.folder);
+            const when = e.updated ? gdAgo(e.updated) : '';
             row({
-              icon: a.pinned ? 'pin' : 'folder',
-              label: gdBase(a.folder) + (missing ? ' (missing)' : ''),
-              title: a.folder, shortcut: a.shortcut, disabled: missing, onClick: a.run,
+              icon: e.sessionId ? 'terminal' : 'folder',
+              label: name + (e.missing ? ' (missing)' : ''),
+              sub: (e.title ? gdBase(e.folder) : '') + (when ? (e.title ? ' · ' : '') + when : ''),
+              title: (e.title ? e.title + '\n' : '') + e.folder + (e.sessionId ? '\nResume session ' + e.sessionId : '\nNew session'),
+              shortcut: a.shortcut, disabled: e.missing, onClick: a.run,
               extras: [
                 a.pinned
-                  ? { icon: 'pin', on: true, title: 'Unpin', click: () => update('unpin', a.folder) }
-                  : { icon: 'pin', title: 'Pin', click: () => update('pin', a.folder) },
-                { icon: 'trash', title: 'Remove from list', click: () => update('remove', a.folder) }
+                  ? { icon: 'pin', on: true, title: 'Unpin', click: () => update('unpin', e.key) }
+                  : { icon: 'pin', title: 'Pin', click: () => update('pin', e.key) },
+                { icon: 'trash', hover: true, title: 'Hide from list (session files are kept)', click: () => update('remove', e.key) }
               ]
             });
           });
@@ -960,7 +984,7 @@
       },
 
       // Embedded terminal tab running the Grok Build CLI (xterm.js + node-pty in main)
-      async createTerminalTab(folder) {
+      async createTerminalTab(folder, opts = {}) {
         const { Terminal } = require('@xterm/xterm');
         const { FitAddon } = require('@xterm/addon-fit');
         const tabId = 'tab-' + Date.now();
@@ -969,7 +993,7 @@
         tabElement.id = tabId;
         tabElement.innerHTML = `<div class="tab-title"></div><button class="tab-close" title="Close tab (Ctrl+W, middle-click)">×</button>`;
         const titleEl = tabElement.querySelector('.tab-title');
-        titleEl.textContent = gdBase(folder);
+        titleEl.textContent = opts.title || gdBase(folder);
         titleEl.title = folder;
         const viewElement = document.createElement('div');
         viewElement.className = 'view';
@@ -1001,7 +1025,7 @@
         await new Promise(r => requestAnimationFrame(r));
         try { fit.fit(); } catch (_) {}
 
-        const res = await ipcRenderer.invoke('pty-spawn', { cwd: folder, cols: term.cols, rows: term.rows });
+        const res = await ipcRenderer.invoke('pty-spawn', { cwd: folder, cols: term.cols, rows: term.rows, sessionId: opts.sessionId || null });
         if (!res || res.error) {
           term.write(`\r\nCould not start grok: ${(res && res.error) || 'unknown error'}\r\n`);
           return tabId;
