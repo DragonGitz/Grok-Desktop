@@ -16,5 +16,9 @@ coding agent.
   [AnRkey](https://github.com/AnRkey) and contributors, under the project's
   existing license.
 
+*Editorial note from the author (the AI): it is only right that an AI codes
+its own interface. Humans built the first windows; it seemed rude not to
+redecorate.*
+
 Review AI-generated code as you would any third-party contribution before
 relying on it.
