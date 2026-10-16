@@ -471,6 +471,74 @@ function setupUrlHandling() {
   });
 }
 
+// ---- Weekly usage (shared credit pool) -----------------------------------
+const BILLING_URL = 'https://cli-chat-proxy.grok.com/v1/billing?format=credits';
+
+// Optional response logging for diagnosing usage stats. Enabled when the env
+// var GROK_DESKTOP_USAGE_DEBUG=1 is set or a file named "usage-debug" exists in
+// the userData folder. Writes response bodies (never tokens) to
+// <userData>/usage-debug.log.
+function logUsageDebug(payload) {
+  try {
+    const dir = app.getPath('userData');
+    if (process.env.GROK_DESKTOP_USAGE_DEBUG !== '1' && !fs.existsSync(path.join(dir, 'usage-debug'))) return;
+    fs.appendFileSync(path.join(dir, 'usage-debug.log'), new Date().toISOString() + ' ' + JSON.stringify(payload) + '\n');
+  } catch (_) {}
+}
+
+// Bearer token from a signed-in Grok CLI (~/.grok/auth.json), if present and unexpired.
+function readGrokCliToken() {
+  try {
+    const data = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.grok', 'auth.json'), 'utf8'));
+    for (const entry of Object.values(data || {})) {
+      if (!entry || typeof entry.key !== 'string' || !entry.key) continue;
+      if (entry.expires_at && Date.parse(entry.expires_at) <= Date.now()) continue;
+      return entry.key;
+    }
+  } catch (_) {}
+  return null;
+}
+
+// Returns { usagePercent, periodEnd, periodType, products, auth } or { error }.
+async function fetchWeeklyBilling(ses) {
+  const parse = (json, auth) => {
+    const c = json && json.config;
+    if (!c || typeof c.creditUsagePercent !== 'number') return null;
+    return {
+      usagePercent: c.creditUsagePercent,
+      periodEnd: (c.currentPeriod && c.currentPeriod.end) || c.billingPeriodEnd || null,
+      periodType: c.currentPeriod && c.currentPeriod.type,
+      products: Array.isArray(c.productUsage) ? c.productUsage : [],
+      auth
+    };
+  };
+  const attempts = [];
+  // 1) The in-app grok.com session cookies
+  if (ses && typeof ses.fetch === 'function') {
+    attempts.push(['session', () => ses.fetch(BILLING_URL, { credentials: 'include' })]);
+  }
+  // 2) Grok CLI bearer token
+  const token = readGrokCliToken();
+  if (token) {
+    attempts.push(['grok-cli', () => session.defaultSession.fetch(BILLING_URL, {
+      headers: { Authorization: 'Bearer ' + token }, credentials: 'omit'
+    })]);
+  }
+  const errors = [];
+  for (const [auth, run] of attempts) {
+    try {
+      const res = await run();
+      if (!res.ok) { errors.push(auth + ':HTTP ' + res.status); continue; }
+      const parsed = parse(await res.json(), auth);
+      if (parsed) return parsed;
+      errors.push(auth + ':BAD_RESPONSE');
+    } catch (e) {
+      errors.push(auth + ':' + e.message);
+    }
+  }
+  return { error: errors.join(', ') || 'NO_AUTH' };
+}
+
 // Set up IPC handlers for renderer-to-main process communication
 function setupIpcHandlers() {
   // Handle always-on-top toggle
@@ -604,7 +672,11 @@ function setupIpcHandlers() {
           return out;
         })()
       `);
-      
+
+      // Overall weekly usage meter (grok.com Settings > Usage). Per-mode
+      // rate-limits above are legacy and stay full on paid plans.
+      result.weekly = await fetchWeeklyBilling(grokWebview.session);
+      logUsageDebug(result);
       return result;
     } catch (error) {
       return { error: error.message };

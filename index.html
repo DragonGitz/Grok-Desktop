@@ -353,6 +353,10 @@
   </div>
   <div class="views-container" id="views"></div>
   <div class="usage-status-bar" id="usage-status-bar">
+    <div class="usage-stat" id="usage-overall-container" style="display:none;">
+      <span class="usage-label">Weekly:</span>
+      <span class="usage-value" id="usage-overall">--</span>
+    </div>
     <div class="usage-stat">
       <span class="usage-label">Fast:</span>
       <span class="usage-value" id="usage-low-effort">--</span>
@@ -1001,7 +1005,7 @@
         }
 
         const all = ['fast', 'expert', 'heavy', 'auto'].map(k => data[k]).filter(Boolean);
-        if (!data.legacy && all.length && all.every(r => r.error)) {
+        if (!data.legacy && all.length && all.every(r => r.error) && typeof data.weekly?.usagePercent !== 'number') {
           // Only claim "Login required" when grok.com actually said so.
           const unauth = all.every(r => r.error === 'UNAUTHORIZED');
           lowEffortEl.textContent = unauth ? 'Login required' : 'Unavailable';
@@ -1023,6 +1027,34 @@
         show(lowEffortEl, fast);
         show(highEffortEl, expert);
         show(grok4HeavyEl, heavy);
+
+        // Weekly combined pool (same meter as grok.com Settings > Usage). When
+        // available it is the primary display; legacy per-mode counts move to
+        // the tooltip.
+        const overallContainer = document.getElementById('usage-overall-container');
+        const overallEl = document.getElementById('usage-overall');
+        const modeEls = [lowEffortEl, highEffortEl, grok4HeavyEl].map(el => el.parentElement);
+        const w = data.weekly;
+        if (w && typeof w.usagePercent === 'number') {
+          const pct = Math.round(w.usagePercent * 10) / 10;
+          let text = `${pct}% used`;
+          if (w.periodEnd) {
+            text += ' · resets ' + new Date(w.periodEnd).toLocaleString(undefined,
+              { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+          }
+          overallEl.textContent = text;
+          overallEl.classList.remove('warning', 'critical');
+          if (pct >= 90) overallEl.classList.add('critical'); else if (pct >= 70) overallEl.classList.add('warning');
+          const lines = (w.products || []).map(p => `${p.product}: ${p.usagePercent}%`);
+          lines.push(`Fast ${lowEffortEl.textContent} · Expert ${highEffortEl.textContent} · Heavy ${grok4HeavyEl.textContent} (legacy per-mode limits)`);
+          overallContainer.title = lines.join('\n');
+          overallContainer.style.display = 'flex';
+          modeEls.forEach(el => { el.style.display = 'none'; });
+          refillContainer.style.display = 'none';
+          return;
+        }
+        overallContainer.style.display = 'none';
+        modeEls.forEach(el => { el.style.display = ''; });
 
         // Refill time: only meaningful when a bucket is exhausted / waiting
         const maxWait = Math.max(0, ...[fast, expert, heavy].filter(Boolean).map(v => v.wait || 0));
