@@ -356,6 +356,7 @@
     <div class="usage-stat" id="usage-overall-container" style="display:none;">
       <span class="usage-label">Weekly:</span>
       <span class="usage-value" id="usage-overall">--</span>
+      <span class="usage-value" id="usage-credits" title="Extra usage credits (prepaid balance)"></span>
       <span class="usage-value" id="usage-reset" style="cursor:pointer;" title="Click to switch between reset time and countdown"></span>
     </div>
     <div class="usage-stat">
@@ -1065,6 +1066,13 @@
           const pct = Math.round(w.usagePercent * 10) / 10;
           overallEl.textContent = `${pct}% used`;
           usageReset.end = w.periodEnd ? new Date(w.periodEnd) : null;
+          const usd = (c) => '$' + (c / 100).toFixed(2);
+          const creditParts = [];
+          if (typeof w.prepaidCents === 'number') creditParts.push('Credits: ' + usd(w.prepaidCents));
+          if (typeof w.onDemandUsedCents === 'number' && typeof w.onDemandCapCents === 'number' && w.onDemandCapCents > 0) {
+            creditParts.push('Extra: ' + usd(w.onDemandUsedCents) + '/' + usd(w.onDemandCapCents));
+          }
+          document.getElementById('usage-credits').textContent = creditParts.length ? '· ' + creditParts.join(' · ') : '';
           usageReset.render();
           overallEl.classList.remove('warning', 'critical');
           if (pct >= 90) overallEl.classList.add('critical'); else if (pct >= 70) overallEl.classList.add('warning');
