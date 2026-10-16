@@ -5,7 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on Keep a Changelog, and this project adheres to Semantic Versioning.
 
 
-## [Unreleased]
+## [2.0.0] - 2026-10-16 (Dragonified fork)
+
+### Added
+- **New-tab flyout** (Windows Terminal style) next to `+`: New Chat, your grok.com Bots (with avatars and pin buttons synced to grok.com's own Pinned section), Open Grok Bot, and Build CLI folders (New…, pinned, 10 recent; inline pin/remove).
+- **Embedded Build CLI** - runs the `grok` CLI in a terminal tab (xterm.js + node-pty), titled after the folder; closing the tab ends the process.
+- **Hotkeys** - Ctrl+Shift+1..9,0 open bots 1-10; Ctrl+Shift+F1..F10 open Build folders 1-10; Ctrl+Shift+N picks a new Build folder; Ctrl+W closes the current tab; middle-click on a tab closes it.
+- **Bots** - "Open new tab" added to grok.com's bot menu; middle-click / Ctrl+click on bot links opens a new tab.
+- **Usage bar** - clickable Credits (opens grok.com billing), eye toggle to hide values, hover shading on clickable items.
+- **About** - fork credit (DragonGitz) and "With a little help from Grok and Dragon's tokens".
+
+### Changed
+- Version bumped to 2.0.0 for the Dragonified fork; portable build named `Grok-Desktop_Portable-v2.0.0-dragonified.exe`.
+
+## [Unreleased] (upstream-bound changes)
 
 ### Fixed
 - **Link routing** - Grok/xAI links that open a new window now open in a new tab (the `<webview>` `new-window` event was removed in Electron 22+); sign-in popups (accounts.x.ai, Google, Apple, X OAuth) use a sandboxed child window; external links open in the default browser. Same-tab navigation is enforced in the main process. Allow-list moved to `src/url-policy.js` (hostname-based).

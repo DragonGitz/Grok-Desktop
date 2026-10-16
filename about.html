@@ -97,10 +97,17 @@
         const name = getParam('name', 'Grok Desktop');
         const version = getParam('version', '0.0.0');
         const repo = getParam('repo', 'https://github.com/AnRkey/Grok-Desktop');
-    document.addEventListener('DOMContentLoaded', () => {
-      const el = document.getElementById('creditLine');
-      if (el) el.textContent = getParam('credit', '');
-    });
+        const creditEl = document.getElementById('creditLine');
+        if (creditEl) creditEl.textContent = getParam('credit', '');
+        const forkUrl = getParam('fork', '');
+        const forkLink = document.getElementById('forkLink');
+        if (forkLink && forkUrl) {
+          forkLink.href = forkUrl;
+          forkLink.setAttribute('target', '_blank');
+          forkLink.setAttribute('rel', 'noopener');
+        } else if (forkLink) {
+          document.getElementById('forkLine').style.display = 'none';
+        }
         const developer = getParam('developer', '');
         const contact = getParam('contact', '');
         document.getElementById('appName').textContent = name;
@@ -152,7 +159,8 @@
   <div class="container">
     <h1 id="appName">Grok Desktop</h1>
     <p class="small" id="version">Version: 0.0.0</p>
-    <p class="small" id="developerLine">Developer: <a id="developerLink" href="#">AnRkey</a></p>
+    <p class="small" id="developerLine">Original developer: <a id="developerLink" href="#">AnRkey</a></p>
+    <p class="small" id="forkLine">Dragonified fork by <a id="forkLink" href="#">DragonGitz</a></p>
     <p><a id="repoLink" href="#">GitHub Repository</a></p>
     <p><a id="contactLink" href="#">Discussion Forums</a></p>
     <p class="small" id="creditLine"></p>

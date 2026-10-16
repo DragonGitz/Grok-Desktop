@@ -607,6 +607,7 @@ function setupIpcHandlers() {
     urlObj.searchParams.set('developer', developer);
     urlObj.searchParams.set('contact', contactUrl);
     urlObj.searchParams.set('credit', 'With a little help from Grok and Dragon\u2019s tokens');
+    urlObj.searchParams.set('fork', 'https://github.com/DragonGitz/Grok-Desktop');
 
     // Send the URL to the renderer to create a new tab
     if (mainWindow && !mainWindow.isDestroyed()) {
@@ -775,16 +776,27 @@ const BOT_DOM_HELPERS = `
   };
   const collapse = (expanded) => { if (expanded) { const less = findToggle('Show less'); if (less) less.click(); } };
   // A bot is pinned when the nearest section label above it (in the Bots area) is "Pinned"
+  // Section labels ("Pinned", "Unassigned", custom sections) are often inside
+  // collapse buttons, so only bot links themselves are excluded; counters and
+  // the Show more/less toggles are skipped.
   const sectionOf = (a) => {
     const w = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);
     w.currentNode = a;
     for (let n = w.previousNode(); n; n = w.previousNode()) {
       if (n === heading) return null;
-      if (n.children.length || n.closest('a, button, [role="button"]')) continue;
+      if (n.children.length || n.closest('a')) continue;
       const t = leafText(n);
-      if (t && t.length < 40) return t;
+      if (!t || t.length > 40 || /^\\d+\\+?$/.test(t) || /^show (more|less)$/i.test(t)) continue;
+      return t;
     }
     return null;
+  };
+  // A bot can be listed twice (Pinned + its own section): pinned if any copy is under "Pinned"
+  const isPinned = (path) => botLinks().some(x => botPath(x) === path && sectionOf(x) === 'Pinned');
+  const closeMenus = () => {
+    const t = document.querySelector('[role="menu"]') || document.activeElement || document.body;
+    t.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }));
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }));
   };
 `;
 
@@ -803,7 +815,7 @@ const SCRAPE_BOTS_JS = `(async () => {${BOT_DOM_HELPERS}
     if (!name) return;
     const img = a.querySelector('img');
     seen.add(url);
-    out.push({ name, url, avatar: img && /^https:/.test(img.src) ? img.src : null, pinned: sectionOf(a) === 'Pinned' });
+    out.push({ name, url, avatar: img && /^https:/.test(img.src) ? img.src : null, pinned: isPinned(botPath(a)) });
   });
   collapse(expanded);
   return out.slice(0, 50);
@@ -817,32 +829,39 @@ const setBotPinnedJs = (url, pinned) => `(async () => {${BOT_DOM_HELPERS}
   try {
     const a = botLinks().find(x => botPath(x) === target);
     if (!a) return { error: 'bot not found in sidebar' };
-    if ((sectionOf(a) === 'Pinned') === ${pinned ? 'true' : 'false'}) return { ok: true, unchanged: true };
+    if (isPinned(target) === ${pinned ? 'true' : 'false'}) return { ok: true, unchanged: true };
     const wantLabel = ${JSON.stringify(pinned ? 'Pin' : 'Unpin')};
-    const findItem = () => [...document.querySelectorAll('[role="menu"] [role="menuitem"]')]
-      .find(i => leafText(i) === wantLabel);
-    const waitItem = async () => { for (let i = 0; i < 20; i++) { const it = findItem(); if (it) return it; await sleep(50); } return null; };
+    const items = () => [...document.querySelectorAll('[role="menu"] [role="menuitem"]')];
+    // Wait for a menu to open; return its matching item, or null if the menu has none
+    const waitMenu = async () => {
+      for (let i = 0; i < 20; i++) {
+        const list = items();
+        if (list.length) { await sleep(50); return items().find(it => leafText(it) === wantLabel) || null; }
+        await sleep(50);
+      }
+      return undefined; // no menu at all
+    };
     const r = a.getBoundingClientRect();
     a.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: r.left + 10, clientY: r.top + 10 }));
-    let item = await waitItem();
-    if (!item) {
-      // Fall back to the row's "..." button (Radix menus open on pointerdown)
+    let item = await waitMenu();
+    if (item === undefined) {
+      // No context menu: use the row's "..." button (Radix menus open on pointerdown)
       let row = a;
       for (let i = 0; i < 6 && row && !row.querySelector('button'); i++) row = row.parentElement;
       const btn = row && [...row.querySelectorAll('button')].pop();
       if (btn) {
         btn.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, pointerType: 'mouse' }));
-        btn.click();
-        item = await waitItem();
+        item = await waitMenu();
       }
     }
     if (!item) {
-      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-      return { error: 'Pin menu item not found' };
+      closeMenus();
+      return { error: item === null ? wantLabel + ' not in bot menu' : 'bot menu did not open' };
     }
     item.click();
-    await sleep(400);
-    return { ok: true };
+    for (let i = 0; i < 20 && isPinned(target) !== ${pinned ? 'true' : 'false'}; i++) await sleep(100);
+    if (items().length) closeMenus();
+    return { ok: isPinned(target) === ${pinned ? 'true' : 'false'} };
   } finally {
     collapse(expanded);
   }
@@ -1191,18 +1210,7 @@ function attachShortcutHandlers(contents) {
     contents.on('before-input-event', (event, input) => {
       try {
         // Only handle keyDown with Control on Windows/Linux
-        if (input.type !== 'keyDown') return;
-        // F1..F10 -> Build CLI folders (pinned, then recent)
-        if (!input.control && !input.alt && !input.shift && !input.meta && /^F([1-9]|10)$/.test(input.key)) {
-          const h = contents.hostWebContents || contents;
-          const w = BrowserWindow.fromWebContents(h);
-          if (w && !w.isDestroyed()) {
-            event.preventDefault();
-            w.webContents.send('shortcut-build-index', Number(input.key.slice(1)));
-          }
-          return;
-        }
-        if (!input.control) return;
+        if (input.type !== 'keyDown' || !input.control) return;
 
         const key = input.key;
         // Deliver to the hosting window (handles webviews as well)
@@ -1210,6 +1218,18 @@ function attachShortcutHandlers(contents) {
         const win = BrowserWindow.fromWebContents(host);
         if (!win || win.isDestroyed()) return;
 
+        // Ctrl+Shift+F1..F10 -> Build CLI folders (pinned, then recent)
+        if (input.shift && /^F([1-9]|10)$/.test(key)) {
+          event.preventDefault();
+          win.webContents.send('shortcut-build-index', Number(key.slice(1)));
+          return;
+        }
+        // Ctrl+W -> close the active tab (in grok.com tabs; terminals keep Ctrl+W)
+        if (!input.shift && (key === 'w' || key === 'W') && contents.getType() === 'webview') {
+          event.preventDefault();
+          win.webContents.send('shortcut-close-tab');
+          return;
+        }
         // Ctrl+Shift+1..9,0 -> bots 1..10
         if (input.shift && /^Digit[0-9]$/.test(input.code || '')) {
           event.preventDefault();
