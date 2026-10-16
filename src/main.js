@@ -615,80 +615,15 @@ function setupIpcHandlers() {
     return { name, version };
   });
 
-  // Fetch Grok usage rate limits
-  // Usage stats feature inspired by Joshua Wang's Grok Usage Watch extension
-  // https://github.com/JoshuaWang2211
-  // Fixed: Execute fetch inside the webview's context (where user is logged in)
-  // to avoid 403 errors from session.fetch() in main process
-  // Thanks to Joshua for identifying the root cause and suggesting this solution!
-  ipcMain.handle('fetch-grok-rate-limits', async () => {
+  // Weekly usage meter (grok.com Settings > Usage), fetched with the in-app
+  // grok.com session (persist:grok partition).
+  ipcMain.handle('fetch-grok-usage', async () => {
     try {
-      // Find the active Grok webview's webContents
-      const allContents = webContents.getAllWebContents();
-      const grokWebview = allContents.find(wc => {
-        try {
-          const url = wc.getURL();
-          const host = new URL(url).hostname;
-          return wc.getType() === 'webview' && (host === 'grok.com' || host.endsWith('.grok.com'));
-        } catch (e) {
-          return false;
-        }
-      });
-      
-      if (!grokWebview) {
-        return { error: 'No Grok tab found' };
-      }
-      
-      // Execute the fetch inside the webview's context where session cookies are available
-      const result = await grokWebview.executeJavaScript(`
-        (async () => {
-          // grok.com moved from per-model names (grok-3, grok-4-heavy + requestKind)
-          // to mode ids (auto/fast/expert/heavy). Query the current modes and fall
-          // back to the legacy request if none of them answer.
-          const post = async (body) => {
-            try {
-              const response = await fetch('/rest/rate-limits', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                credentials: 'include',
-                body: JSON.stringify(body)
-              });
-              if (response.status === 401 || response.status === 403) {
-                return { error: 'UNAUTHORIZED', status: response.status };
-              }
-              if (!response.ok) {
-                return { error: 'HTTP ' + response.status, status: response.status };
-              }
-              const data = await response.json();
-              if (!data || typeof data !== 'object' || data.code) {
-                return { error: 'BAD_RESPONSE' };
-              }
-              return data;
-            } catch (e) {
-              return { error: e.message };
-            }
-          };
-
-          const modes = ['fast', 'expert', 'heavy', 'auto'];
-          const results = await Promise.all(modes.map(m => post({ modelName: m })));
-          const out = {};
-          modes.forEach((m, i) => { out[m] = results[i]; });
-
-          if (modes.every(m => out[m].error)) {
-            const legacy = await post({ requestKind: 'DEFAULT', modelName: 'grok-3' });
-            if (!legacy.error) out.legacy = legacy;
-          }
-          return out;
-        })()
-      `);
-
-      // Overall weekly usage meter (grok.com Settings > Usage). Per-mode
-      // rate-limits above are legacy and stay full on paid plans.
-      result.weekly = await fetchWeeklyBilling(grokWebview.session);
-      logUsageDebug(result);
-      return result;
+      const weekly = await fetchWeeklyBilling(session.fromPartition('persist:grok'));
+      logUsageDebug({ weekly });
+      return { weekly };
     } catch (error) {
-      return { error: error.message };
+      return { weekly: { error: error.message } };
     }
   });
 
