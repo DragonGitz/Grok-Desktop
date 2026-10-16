@@ -163,9 +163,13 @@
     }
 
     .new-tab-group .new-tab-menu-button {
-      font-size: 11px;
-      width: 18px;
+      width: 30px;
       margin-left: 0;
+    }
+
+    .new-tab-menu-button svg {
+      width: 12px;
+      height: 12px;
     }
 
     .new-tab-button:hover {
@@ -370,15 +374,15 @@
       <span class="usage-value" id="usage-credits" title="Extra usage credits (prepaid balance)"></span>
       <span class="usage-value" id="usage-reset" style="cursor:pointer;" title="Click to switch between reset time and countdown"></span>
     </div>
-    <div class="usage-stat">
+    <div class="usage-stat" style="display:none;">
       <span class="usage-label">Fast:</span>
       <span class="usage-value" id="usage-low-effort">--</span>
     </div>
-    <div class="usage-stat">
+    <div class="usage-stat" style="display:none;">
       <span class="usage-label">Expert:</span>
       <span class="usage-value" id="usage-high-effort">--</span>
     </div>
-    <div class="usage-stat" id="usage-grok4-container">
+    <div class="usage-stat" id="usage-grok4-container" style="display:none;">
       <span class="usage-label">Heavy:</span>
       <span class="usage-value" id="usage-grok4-heavy">--</span>
     </div>
@@ -543,8 +547,8 @@
           });
           const menuBtn = document.createElement('button');
           menuBtn.className = 'new-tab-button new-tab-menu-button';
-          menuBtn.textContent = '\u25BE';
-          menuBtn.title = 'More: Grok Bot, Build CLI';
+          menuBtn.innerHTML = '<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2.5 4.5 6 8l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+          menuBtn.title = 'More: Bots, Grok Bot, Build CLI';
           menuBtn.addEventListener('click', () => {
             const r = menuBtn.getBoundingClientRect();
             ipcRenderer.invoke('show-new-tab-menu', { x: r.left, y: r.bottom });
@@ -899,12 +903,13 @@
         const el = document.getElementById('usage-reset');
         if (!el) return;
         if (!this.end || isNaN(this.end)) { el.textContent = ''; return; }
+        const label = (t) => `<span class="usage-label">· ${t}</span> `;
         if (this.relative) {
           const ms = Math.max(0, this.end - Date.now());
           const d = Math.floor(ms / 86400000), h = Math.floor(ms / 3600000) % 24, m = Math.floor(ms / 60000) % 60;
-          el.textContent = `· resets in ${d ? d + 'd ' : ''}${h}:${String(m).padStart(2, '0')}`;
+          el.innerHTML = label('reset in') + `${d ? d + 'd ' : ''}${h}:${String(m).padStart(2, '0')}`;
         } else {
-          el.textContent = '· resets ' + this.end.toLocaleString(undefined,
+          el.innerHTML = label('reset') + this.end.toLocaleString(undefined,
             { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
         }
       }
@@ -1088,15 +1093,15 @@
         const w = data.weekly;
         if (w && typeof w.usagePercent === 'number') {
           const pct = Math.round(w.usagePercent * 10) / 10;
-          overallEl.textContent = `${pct}% used`;
+          overallEl.textContent = `${pct}%`;
           usageReset.end = w.periodEnd ? new Date(w.periodEnd) : null;
           const usd = (c) => '$' + (c / 100).toFixed(2);
           const creditParts = [];
-          if (typeof w.prepaidCents === 'number') creditParts.push('Credits: ' + usd(w.prepaidCents));
+          if (typeof w.prepaidCents === 'number') creditParts.push('<span class="usage-label">· Credits:</span> ' + usd(w.prepaidCents));
           if (typeof w.onDemandUsedCents === 'number' && typeof w.onDemandCapCents === 'number' && w.onDemandCapCents > 0) {
-            creditParts.push('Extra: ' + usd(w.onDemandUsedCents) + '/' + usd(w.onDemandCapCents));
+            creditParts.push('<span class="usage-label">· Extra:</span> ' + usd(w.onDemandUsedCents) + '/' + usd(w.onDemandCapCents));
           }
-          document.getElementById('usage-credits').textContent = creditParts.length ? '· ' + creditParts.join(' · ') : '';
+          document.getElementById('usage-credits').innerHTML = creditParts.join(' ');
           usageReset.render();
           overallEl.classList.remove('warning', 'critical');
           if (pct >= 90) overallEl.classList.add('critical'); else if (pct >= 70) overallEl.classList.add('warning');

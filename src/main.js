@@ -807,8 +807,60 @@ async function pickBuildFolder() {
   return res.canceled || !res.filePaths[0] ? null : res.filePaths[0];
 }
 
-ipcMain.handle('show-new-tab-menu', (_event, pos) => {
+// Bots listed in grok.com's sidebar, scraped from the signed-in Grok tab
+// (links to /bot/<id>; section fallback under the "Bots" heading). The last
+// known list is cached in settings for when no Grok tab is loaded.
+const SCRAPE_BOTS_JS = `(() => {
+  const out = [], seen = new Set();
+  const add = (a) => {
+    try {
+      const u = new URL(a.getAttribute('href'), location.href);
+      if (u.origin !== location.origin || /^\\/c\\//.test(u.pathname) || seen.has(u.href)) return;
+      const name = (a.innerText || a.textContent || '').trim().split('\\n')[0].trim();
+      if (!name) return;
+      seen.add(u.href); out.push({ name, url: u.href });
+    } catch (_) {}
+  };
+  document.querySelectorAll('a[href]').forEach(a => {
+    try { if (/^\\/bots?\\/[^/?#]+/.test(new URL(a.getAttribute('href'), location.href).pathname)) add(a); } catch (_) {}
+  });
+  if (!out.length) {
+    const h = [...document.querySelectorAll('nav *, aside *')].find(e => !e.children.length && e.textContent.trim() === 'Bots');
+    let sec = h;
+    for (let i = 0; i < 4 && sec && !sec.querySelector('a[href]'); i++) sec = sec.parentElement;
+    if (sec) sec.querySelectorAll('a[href]').forEach(add);
+  }
+  return out.slice(0, 40);
+})()`;
+async function getBots() {
+  const wc = webContents.getAllWebContents().find(c => {
+    try { return c.getType() === 'webview' && new URL(c.getURL()).hostname === 'grok.com'; } catch (_) { return false; }
+  });
+  if (wc) {
+    try {
+      const bots = await Promise.race([wc.executeJavaScript(SCRAPE_BOTS_JS), new Promise(r => setTimeout(() => r(null), 1500))]);
+      if (Array.isArray(bots) && bots.length) {
+        writeSettings({ bots });
+        logUsageDebug({ bots });
+        return bots;
+      }
+    } catch (_) {}
+  }
+  const cached = readSettings().bots;
+  return Array.isArray(cached) ? cached : [];
+}
+
+ipcMain.handle('show-new-tab-menu', async (_event, pos) => {
   if (!mainWindow) return;
+  const bots = await getBots();
+  const openTab = (url) => mainWindow.webContents.send('open-url-in-new-tab', url);
+  const botsSubmenu = [
+    ...(bots.length
+      ? bots.filter(b => isInAppUrl(b.url)).map(b => ({ label: b.name.replace(/&/g, '&&'), click: () => openTab(b.url) }))
+      : [{ label: 'No bots found (open grok.com sidebar)', enabled: false }]),
+    { type: 'separator' },
+    { label: 'All Bots…', click: () => openTab('https://grok.com/bot') }
+  ];
   const bot = findGrokBot();
   const cli = findGrokCli();
   const { pinned, recent } = buildFolders();
@@ -836,6 +888,7 @@ ipcMain.handle('show-new-tab-menu', (_event, pos) => {
   ];
   Menu.buildFromTemplate([
     { label: 'New Chat', click: () => mainWindow.webContents.send('shortcut-new-tab') },
+    { label: 'Bots', submenu: botsSubmenu },
     { type: 'separator' },
     {
       label: 'Open Grok Bot', visible: !!bot,
@@ -879,6 +932,12 @@ function setupContextMenus() {
       }
 
       // Link options
+      if (params.linkURL && isInAppUrl(params.linkURL) && mainWindow) {
+        template.push({
+          label: 'Open Link in New Tab',
+          click: () => mainWindow.webContents.send('open-url-in-new-tab', params.linkURL)
+        });
+      }
       if (params.linkURL) {
         template.push({
           label: 'Open Link in Browser',
