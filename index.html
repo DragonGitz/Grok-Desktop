@@ -356,6 +356,7 @@
     <div class="usage-stat" id="usage-overall-container" style="display:none;">
       <span class="usage-label">Weekly:</span>
       <span class="usage-value" id="usage-overall">--</span>
+      <span class="usage-value" id="usage-reset" style="cursor:pointer;" title="Click to switch between reset time and countdown"></span>
     </div>
     <div class="usage-stat">
       <span class="usage-label">Fast:</span>
@@ -865,6 +866,31 @@
       tabManager.createTab(aboutUrl);
     });
 
+    // Weekly reset label: click toggles absolute time vs. live countdown (persisted)
+    const usageReset = {
+      end: null,
+      relative: localStorage.getItem('usageResetRelative') === '1',
+      render() {
+        const el = document.getElementById('usage-reset');
+        if (!el) return;
+        if (!this.end || isNaN(this.end)) { el.textContent = ''; return; }
+        if (this.relative) {
+          const ms = Math.max(0, this.end - Date.now());
+          const d = Math.floor(ms / 86400000), h = Math.floor(ms / 3600000) % 24, m = Math.floor(ms / 60000) % 60;
+          el.textContent = `· resets in ${d ? d + 'd ' : ''}${h}:${String(m).padStart(2, '0')}`;
+        } else {
+          el.textContent = '· resets ' + this.end.toLocaleString(undefined,
+            { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+        }
+      }
+    };
+    document.getElementById('usage-reset').addEventListener('click', () => {
+      usageReset.relative = !usageReset.relative;
+      localStorage.setItem('usageResetRelative', usageReset.relative ? '1' : '0');
+      usageReset.render();
+    });
+    setInterval(() => { if (usageReset.relative) usageReset.render(); }, 30000);
+
     // Usage stats management
     // Feature inspired by Joshua Wang's Grok Usage Watch extension
     // https://github.com/JoshuaWang2211 - Thanks for your contribution!
@@ -1037,12 +1063,9 @@
         const w = data.weekly;
         if (w && typeof w.usagePercent === 'number') {
           const pct = Math.round(w.usagePercent * 10) / 10;
-          let text = `${pct}% used`;
-          if (w.periodEnd) {
-            text += ' · resets ' + new Date(w.periodEnd).toLocaleString(undefined,
-              { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
-          }
-          overallEl.textContent = text;
+          overallEl.textContent = `${pct}% used`;
+          usageReset.end = w.periodEnd ? new Date(w.periodEnd) : null;
+          usageReset.render();
           overallEl.classList.remove('warning', 'critical');
           if (pct >= 90) overallEl.classList.add('critical'); else if (pct >= 70) overallEl.classList.add('warning');
           const lines = (w.products || []).map(p => `${p.product}: ${p.usagePercent}%`);
@@ -1054,6 +1077,7 @@
           return;
         }
         overallContainer.style.display = 'none';
+        usageReset.end = null;
         modeEls.forEach(el => { el.style.display = ''; });
 
         // Refill time: only meaningful when a bucket is exhausted / waiting
