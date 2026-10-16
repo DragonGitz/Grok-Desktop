@@ -486,19 +486,6 @@ function logUsageDebug(payload) {
   } catch (_) {}
 }
 
-// Bearer token from a signed-in Grok CLI (~/.grok/auth.json), if present and unexpired.
-function readGrokCliToken() {
-  try {
-    const data = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.grok', 'auth.json'), 'utf8'));
-    for (const entry of Object.values(data || {})) {
-      if (!entry || typeof entry.key !== 'string' || !entry.key) continue;
-      if (entry.expires_at && Date.parse(entry.expires_at) <= Date.now()) continue;
-      return entry.key;
-    }
-  } catch (_) {}
-  return null;
-}
-
 // Returns { usagePercent, periodEnd, periodType, products, auth } or { error }.
 async function fetchWeeklyBilling(ses) {
   const cents = (v) => {
@@ -522,16 +509,9 @@ async function fetchWeeklyBilling(ses) {
     };
   };
   const attempts = [];
-  // 1) The in-app grok.com session cookies
+  // Uses the in-app grok.com session cookies
   if (ses && typeof ses.fetch === 'function') {
     attempts.push(['session', () => ses.fetch(BILLING_URL, { credentials: 'include' })]);
-  }
-  // 2) Grok CLI bearer token
-  const token = readGrokCliToken();
-  if (token) {
-    attempts.push(['grok-cli', () => session.defaultSession.fetch(BILLING_URL, {
-      headers: { Authorization: 'Bearer ' + token }, credentials: 'omit'
-    })]);
   }
   const errors = [];
   for (const [auth, run] of attempts) {
