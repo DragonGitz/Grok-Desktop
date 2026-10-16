@@ -1076,7 +1076,20 @@
           usageReset.render();
           overallEl.classList.remove('warning', 'critical');
           if (pct >= 90) overallEl.classList.add('critical'); else if (pct >= 70) overallEl.classList.add('warning');
-          const lines = (w.products || []).map(p => `${p.product}: ${p.usagePercent}%`);
+          const lines = [];
+          // Pace: average burn since reset vs. what is left per remaining day
+          const startMs = Date.parse(w.periodStart), endMs = Date.parse(w.periodEnd);
+          if (!isNaN(startMs) && !isNaN(endMs) && endMs > startMs) {
+            const DAY = 86400000, now = Date.now();
+            const elapsed = Math.max(0.1, (now - startMs) / DAY);
+            const left = Math.max(0.1, (endMs - now) / DAY);
+            const avg = w.usagePercent / elapsed;
+            lines.push(`Avg since reset: ${avg.toFixed(1)}%/day`);
+            lines.push(`Left per day: ${(Math.max(0, 100 - w.usagePercent) / left).toFixed(1)}%/day`);
+            lines.push(`On pace for ${(avg * ((endMs - startMs) / DAY)).toFixed(1)}% by reset`);
+            lines.push('');
+          }
+          lines.push(...(w.products || []).map(p => `${p.product}: ${p.usagePercent}%`));
           lines.push(`Fast ${lowEffortEl.textContent} · Expert ${highEffortEl.textContent} · Heavy ${grok4HeavyEl.textContent} (legacy per-mode limits)`);
           overallContainer.title = lines.join('\n');
           overallContainer.style.display = 'flex';
