@@ -512,6 +512,7 @@ async function fetchWeeklyBilling(ses) {
       usagePercent: c.creditUsagePercent,
       periodEnd: (c.currentPeriod && c.currentPeriod.end) || c.billingPeriodEnd || null,
       periodType: c.currentPeriod && c.currentPeriod.type,
+      periodStart: (c.currentPeriod && c.currentPeriod.start) || c.billingPeriodStart || null,
       products: Array.isArray(c.productUsage) ? c.productUsage : [],
       // Money fields are int64 wrappers ({ val }) in cents, e.g. prepaidBalance: { val: 257 } = $2.57
       prepaidCents: cents(c.prepaidBalance),
