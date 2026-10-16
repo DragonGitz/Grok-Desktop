@@ -354,22 +354,22 @@
   <div class="views-container" id="views"></div>
   <div class="usage-status-bar" id="usage-status-bar">
     <div class="usage-stat">
-      <span class="usage-label">Low Effort:</span>
+      <span class="usage-label">Fast:</span>
       <span class="usage-value" id="usage-low-effort">--</span>
     </div>
     <div class="usage-stat">
-      <span class="usage-label">High Effort:</span>
+      <span class="usage-label">Expert:</span>
       <span class="usage-value" id="usage-high-effort">--</span>
     </div>
     <div class="usage-stat" id="usage-grok4-container">
-      <span class="usage-label">Grok 4 Heavy:</span>
+      <span class="usage-label">Heavy:</span>
       <span class="usage-value" id="usage-grok4-heavy">--</span>
     </div>
     <div class="usage-stat usage-refill" id="usage-refill-container" style="display:none;">
       <span class="usage-label">Refill:</span>
       <span class="usage-value" id="usage-refill">--</span>
     </div>
-    <div class="usage-toggle" id="usage-grok4-toggle" title="Toggle Grok 4 Heavy stats">
+    <div class="usage-toggle" id="usage-grok4-toggle" title="Toggle Heavy stats">
       <span class="toggle-icon">👁</span>
     </div>
   </div>
@@ -634,20 +634,7 @@
         
         const handleOpenUrl = (targetUrl) => {
           const url = targetUrl;
-          const internalPatterns = [
-            // Allow grok.com domain and all its paths (for normal browsing), but not as subdomain
-            /^https?:\/\/grok\.com(?:\/|$)/,
-            // Allow x.ai domain and all its paths (for normal browsing), but not as subdomain
-            /^https?:\/\/x\.ai(?:\/|$)/,
-            // Allow x.com domain for OAuth flows (but not as subdomain)
-            /^https?:\/\/x\.com(?:\/|$)/,
-            // Allow accounts.x.ai domain and auth-related paths (but not as subdomain)
-            /^https?:\/\/accounts\.x\.ai(?:\/|$)/,
-            // Allow accounts.google.com domain and OAuth paths (but not as subdomain)
-            /^https?:\/\/accounts\.google\.com(?:\/|$)/,
-            // Allow appleid.apple.com domain and OAuth paths (but not as subdomain)
-            /^https?:\/\/appleid\.apple\.com(?:\/|$)/
-          ];
+          const { isInAppUrl, isSafeExternalUrl } = require('./src/url-policy.js');
           // Explicitly treat auth/navigation endpoints as internal and navigate in same tab
           if (/^https?:\/\/grok\.com\/sign-in(\b|\/|\?|#)/i.test(url)
            || /^https?:\/\/grok\.com\/sign-out(\b|\/|\?|#)/i.test(url)
@@ -660,7 +647,7 @@
             return;
           }
 
-          const isInternalUrl = internalPatterns.some(pattern => pattern.test(url));
+          const isInternalUrl = isInAppUrl(url);
 
           if (isInternalUrl) {
             if (typeof webview.loadURL === 'function') {
@@ -668,7 +655,7 @@
             } else {
               webview.src = url;
             }
-          } else {
+          } else if (isSafeExternalUrl(url)) {
             require('electron').shell.openExternal(url);
           }
         };
@@ -678,16 +665,9 @@
         // Allow internal same-tab nav; open external in browser
         webview.addEventListener('will-navigate', (e) => {
           const url = e.url;
-          const internal = /^https?:\/\/grok\.com(?:\/|$)/.test(url) ||
-                           /^https?:\/\/x\.ai(?:\/|$)/.test(url) ||
-                           /^https?:\/\/x\.com(?:\/|$)/.test(url) ||
-                           /^https?:\/\/accounts\.x\.ai(?:\/|$)/.test(url) ||
-                           /^https?:\/\/accounts\.google\.com(?:\/|$)/.test(url) ||
-                           /^https?:\/\/appleid\.apple\.com(?:\/|$)/.test(url);
-          if (!internal) {
-            e.preventDefault();
-            require('electron').shell.openExternal(url);
-          }
+          // Note: 'will-navigate' on <webview> is not cancelable; the main process
+          // enforces this policy. Kept here only as a no-op hook for clarity.
+          void url;
         });
         
         // Store tab info
@@ -873,6 +853,10 @@
         ipcRenderer.invoke('show-app-info');
       }
     });
+    // In-app links that requested a new window (target=_blank / window.open)
+    ipcRenderer.on('open-url-in-new-tab', (_event, url) => {
+      tabManager.createTab(url);
+    });
     ipcRenderer.on('open-about-tab', (event, aboutUrl) => {
       tabManager.createTab(aboutUrl);
     });
@@ -985,50 +969,63 @@
         const refillContainer = document.getElementById('usage-refill-container');
         const refillEl = document.getElementById('usage-refill');
 
-        if (data.error || data.DEFAULT?.error) {
-          lowEffortEl.textContent = 'Login required';
+        // Normalise a /rest/rate-limits response. Current responses are flat
+        // ({remainingQueries,totalQueries,windowSizeSeconds,waitTimeSeconds});
+        // older ones nested counts under lowEffortRateLimits/highEffortRateLimits.
+        const norm = (r, nested) => {
+          if (!r || r.error) return null;
+          const src = (nested && r[nested]) ? r[nested] : r;
+          const remaining = src.remainingQueries ?? src.remaining;
+          if (typeof remaining !== 'number') return null;
+          const total = src.totalQueries ?? r.totalQueries ?? (nested ? null : r.totalTokens) ?? null;
+          return { remaining, total, wait: src.waitTimeSeconds ?? r.waitTimeSeconds ?? 0 };
+        };
+        const show = (el, v) => {
+          el.classList.remove('warning', 'critical');
+          if (!v) { el.textContent = '--'; return; }
+          if (typeof v.total === 'number' && v.total > 0) {
+            el.textContent = `${v.remaining} / ${v.total}`;
+            this.applyWarningClass(el, v.remaining, v.total);
+          } else {
+            el.textContent = String(v.remaining);
+          }
+        };
+
+        if (data.error) {
+          // No Grok tab / script failure: not an auth problem.
+          lowEffortEl.textContent = data.error === 'No Grok tab found' ? 'No Grok tab' : 'Unavailable';
           highEffortEl.textContent = '--';
           grok4HeavyEl.textContent = '--';
           refillContainer.style.display = 'none';
           return;
         }
-        
-        // Low Effort
-        const lowRemaining = data.DEFAULT?.lowEffortRateLimits?.remainingQueries ?? '--';
-        const totalTokens = data.DEFAULT?.totalTokens ?? null;
-        if (lowRemaining !== '--' && totalTokens) {
-          lowEffortEl.textContent = `${lowRemaining} / ${totalTokens}`;
-          this.applyWarningClass(lowEffortEl, lowRemaining, totalTokens);
-        } else {
-          lowEffortEl.textContent = lowRemaining;
+
+        const all = ['fast', 'expert', 'heavy', 'auto'].map(k => data[k]).filter(Boolean);
+        if (!data.legacy && all.length && all.every(r => r.error)) {
+          // Only claim "Login required" when grok.com actually said so.
+          const unauth = all.every(r => r.error === 'UNAUTHORIZED');
+          lowEffortEl.textContent = unauth ? 'Login required' : 'Unavailable';
+          highEffortEl.textContent = '--';
+          grok4HeavyEl.textContent = '--';
+          refillContainer.style.display = 'none';
+          return;
         }
-        
-        // High Effort
-        const highRemaining = data.DEFAULT?.highEffortRateLimits?.remainingQueries ?? '--';
-        const highCost = data.DEFAULT?.highEffortRateLimits?.cost ?? null;
-        if (highRemaining !== '--' && totalTokens && highCost) {
-          const highTotal = Math.floor(totalTokens / highCost);
-          highEffortEl.textContent = `${highRemaining} / ${highTotal}`;
-          this.applyWarningClass(highEffortEl, highRemaining, highTotal);
+
+        let fast, expert, heavy;
+        if (data.legacy) {
+          fast = norm(data.legacy, 'lowEffortRateLimits') || norm(data.legacy);
+          expert = norm(data.legacy, 'highEffortRateLimits');
         } else {
-          highEffortEl.textContent = highRemaining;
+          fast = norm(data.fast) || norm(data.auto);
+          expert = norm(data.expert);
+          heavy = norm(data.heavy);
         }
-        
-        // Grok 4 Heavy
-        const grok4Remaining = data.GROK4HEAVY?.remainingQueries ?? '--';
-        const grok4Total = data.GROK4HEAVY?.totalQueries ?? null;
-        if (grok4Remaining !== '--' && grok4Total) {
-          grok4HeavyEl.textContent = `${grok4Remaining} / ${grok4Total}`;
-          this.applyWarningClass(grok4HeavyEl, grok4Remaining, grok4Total);
-        } else {
-          grok4HeavyEl.textContent = grok4Remaining;
-        }
-        
-        // Refill time
-        const lowWait = data.DEFAULT?.lowEffortRateLimits?.waitTimeSeconds ?? 0;
-        const highWait = data.DEFAULT?.highEffortRateLimits?.waitTimeSeconds ?? 0;
-        const maxWait = Math.max(lowWait, highWait);
-        
+        show(lowEffortEl, fast);
+        show(highEffortEl, expert);
+        show(grok4HeavyEl, heavy);
+
+        // Refill time: only meaningful when a bucket is exhausted / waiting
+        const maxWait = Math.max(0, ...[fast, expert, heavy].filter(Boolean).map(v => v.wait || 0));
         if (maxWait > 0) {
           refillContainer.style.display = 'flex';
           refillEl.textContent = this.formatTime(maxWait);

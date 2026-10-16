@@ -189,21 +189,8 @@ let aboutWindow;
 // Allow autoplay without user gesture (for seamless audio playback)
 try { app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required'); } catch (_) {}
 
-// Define the allowed URL patterns for internal handling with secure domain validation
-const allowedUrlPatterns = [
-  // Allow grok.com domain and all its paths (for normal browsing), but not as subdomain
-  /^https?:\/\/grok\.com(?:\/|$)/,
-  // Allow x.ai domain and all its paths (for normal browsing), but not as subdomain
-  /^https?:\/\/x\.ai(?:\/|$)/,
-  // Allow x.com domain for OAuth flows (but not as subdomain)
-  /^https?:\/\/x\.com(?:\/|$)/,
-  // Allow accounts.x.ai domain and auth-related paths (but not as subdomain)
-  /^https?:\/\/accounts\.x\.ai(?:\/|$)/,
-  // Allow accounts.google.com domain and OAuth paths (but not as subdomain)
-  /^https?:\/\/accounts\.google\.com(?:\/|$)/,
-  // Allow appleid.apple.com domain and OAuth paths (but not as subdomain)
-  /^https?:\/\/appleid\.apple\.com(?:\/|$)/
-];
+// URL policy shared with the renderer (which hosts stay in-app vs. open in browser)
+const { isInAppUrl, isAuthPopupUrl, isSafeExternalUrl } = require('./url-policy');
 
 // Enforce single instance
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
@@ -443,15 +430,44 @@ app.on('window-all-closed', () => {
 function setupUrlHandling() {
   // Handle navigation events from webContents
   app.on('web-contents-created', (event, contents) => {
-    // Intercept new window requests; always deny BrowserWindow creation
-    // Internal domains will be handled by the renderer's webview 'new-window' handler
+    // New-window requests (target=_blank, window.open). Electron removed the
+    // <webview> 'new-window' event, so routing must happen here:
+    //  - sign-in popups (Google/Apple/X OAuth) get a real child window so
+    //    window.opener/postMessage flows keep working
+    //  - other Grok/xAI links open in a new in-app tab
+    //  - everything else opens in the default browser
     contents.setWindowOpenHandler(({ url }) => {
-      const isInternal = allowedUrlPatterns.some(pattern => pattern.test(url));
-      if (!isInternal) {
+      if (isAuthPopupUrl(url)) {
+        return {
+          action: 'allow',
+          overrideBrowserWindowOptions: {
+            width: 600,
+            height: 760,
+            autoHideMenuBar: true,
+            webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true }
+          }
+        };
+      }
+      if (isInAppUrl(url)) {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('open-url-in-new-tab', url);
+        }
+      } else if (isSafeExternalUrl(url)) {
         shell.openExternal(url);
       }
       return { action: 'deny' };
     });
+
+    // Same-tab navigation inside Grok tabs: keep Grok/xAI/sign-in pages in-app,
+    // send genuinely external links to the default browser.
+    if (contents.getType() === 'webview') {
+      contents.on('will-navigate', (e, url) => {
+        if (!isInAppUrl(url)) {
+          e.preventDefault();
+          if (isSafeExternalUrl(url)) shell.openExternal(url);
+        }
+      });
+    }
   });
 }
 
@@ -535,7 +551,8 @@ function setupIpcHandlers() {
       const grokWebview = allContents.find(wc => {
         try {
           const url = wc.getURL();
-          return url.includes('grok.com') && !url.includes('about.html');
+          const host = new URL(url).hostname;
+          return wc.getType() === 'webview' && (host === 'grok.com' || host.endsWith('.grok.com'));
         } catch (e) {
           return false;
         }
@@ -548,35 +565,43 @@ function setupIpcHandlers() {
       // Execute the fetch inside the webview's context where session cookies are available
       const result = await grokWebview.executeJavaScript(`
         (async () => {
-          const fetchRateLimits = async (requestKind, modelName) => {
+          // grok.com moved from per-model names (grok-3, grok-4-heavy + requestKind)
+          // to mode ids (auto/fast/expert/heavy). Query the current modes and fall
+          // back to the legacy request if none of them answer.
+          const post = async (body) => {
             try {
-              const response = await fetch('https://grok.com/rest/rate-limits', {
+              const response = await fetch('/rest/rate-limits', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ requestKind, modelName })
+                credentials: 'include',
+                body: JSON.stringify(body)
               });
-              
               if (response.status === 401 || response.status === 403) {
-                return { error: 'UNAUTHORIZED' };
+                return { error: 'UNAUTHORIZED', status: response.status };
               }
               if (!response.ok) {
-                return { error: \`HTTP \${response.status}\` };
+                return { error: 'HTTP ' + response.status, status: response.status };
               }
-              return await response.json();
+              const data = await response.json();
+              if (!data || typeof data !== 'object' || data.code) {
+                return { error: 'BAD_RESPONSE' };
+              }
+              return data;
             } catch (e) {
               return { error: e.message };
             }
           };
-          
-          const [defaultLimits, grok4HeavyLimits] = await Promise.all([
-            fetchRateLimits('DEFAULT', 'grok-3'),
-            fetchRateLimits('DEFAULT', 'grok-4-heavy')
-          ]);
-          
-          return {
-            DEFAULT: defaultLimits,
-            GROK4HEAVY: grok4HeavyLimits
-          };
+
+          const modes = ['fast', 'expert', 'heavy', 'auto'];
+          const results = await Promise.all(modes.map(m => post({ modelName: m })));
+          const out = {};
+          modes.forEach((m, i) => { out[m] = results[i]; });
+
+          if (modes.every(m => out[m].error)) {
+            const legacy = await post({ requestKind: 'DEFAULT', modelName: 'grok-3' });
+            if (!legacy.error) out.legacy = legacy;
+          }
+          return out;
         })()
       `);
       
