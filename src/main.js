@@ -606,6 +606,7 @@ function setupIpcHandlers() {
     const contactUrl = 'https://github.com/AnRkey/Grok-Desktop/discussions';
     urlObj.searchParams.set('developer', developer);
     urlObj.searchParams.set('contact', contactUrl);
+    urlObj.searchParams.set('credit', 'With a little help from Grok and Dragon\u2019s tokens');
 
     // Send the URL to the renderer to create a new tab
     if (mainWindow && !mainWindow.isDestroyed()) {
@@ -743,31 +744,108 @@ async function pickBuildFolder() {
   return res.canceled || !res.filePaths[0] ? null : res.filePaths[0];
 }
 
-// Bots listed in grok.com's sidebar (links to /bot/<id>, the app route in
-// grok.com's bundle). Read from the signed-in Grok tab, expanding the Bots
-// "Show more" list briefly so all bots are included, and cached in settings.
-const SCRAPE_BOTS_JS = `(async () => {
+const BOT_DOM_HELPERS = `
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-  const isBot = (a) => { try { return /^\\/bot\\/[^/?#]+/.test(new URL(a.getAttribute('href'), location.href).pathname); } catch (_) { return false; } };
-  const heading = [...document.querySelectorAll('nav *, aside *')].find(e => !e.children.length && e.textContent.trim() === 'Bots');
+  const botPath = (a) => { try { const p = new URL(a.getAttribute('href'), location.href).pathname; return /^\\/bot\\/[^/?#]+/.test(p) ? p : null; } catch (_) { return null; } };
+  const botLinks = () => [...document.querySelectorAll('a[href]')].filter(botPath);
+  const leafText = (e) => (e.textContent || '').trim();
+  const heading = [...document.querySelectorAll('nav *, aside *')].find(e => !e.children.length && leafText(e) === 'Bots');
   const after = (e) => !heading || (heading.compareDocumentPosition(e) & Node.DOCUMENT_POSITION_FOLLOWING);
-  const findToggle = (label) => [...document.querySelectorAll('nav button, aside button, nav [role="button"], aside [role="button"]')]
-    .find(e => e.textContent.trim() === label && after(e));
-  const more = findToggle('Show more');
-  if (more) { more.click(); await sleep(300); }
+  // "Show more" / "Show less" may be a button or a plain clickable element
+  const findToggle = (label) => {
+    const leaf = [...document.querySelectorAll('nav *, aside *')].find(e => after(e) && leafText(e) === label && e.children.length <= 1);
+    return leaf ? (leaf.closest('button, [role="button"]') || leaf) : null;
+  };
+  // Wait until the number of bot links stops changing (or timeout)
+  const settle = async (timeout = 2000) => {
+    let last = -1, stable = 0;
+    const end = Date.now() + timeout;
+    while (Date.now() < end) {
+      const n = botLinks().length;
+      if (n === last) { if (++stable >= 3) return; } else { stable = 0; last = n; }
+      await sleep(100);
+    }
+  };
+  const expand = async () => {
+    const more = findToggle('Show more');
+    if (!more) return false;
+    more.click();
+    await settle();
+    return true;
+  };
+  const collapse = (expanded) => { if (expanded) { const less = findToggle('Show less'); if (less) less.click(); } };
+  // A bot is pinned when the nearest section label above it (in the Bots area) is "Pinned"
+  const sectionOf = (a) => {
+    const w = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);
+    w.currentNode = a;
+    for (let n = w.previousNode(); n; n = w.previousNode()) {
+      if (n === heading) return null;
+      if (n.children.length || n.closest('a, button, [role="button"]')) continue;
+      const t = leafText(n);
+      if (t && t.length < 40) return t;
+    }
+    return null;
+  };
+`;
+
+// Bots listed in grok.com's sidebar (links to /bot/<id>, the app route in
+// grok.com's bundle). grok.com loads bots through an internal relay client
+// with no simple REST endpoint, so they are read from the signed-in Grok
+// tab's sidebar: "Show more" is expanded until the list settles, then
+// collapsed again. Pinned state comes from the sidebar's "Pinned" section.
+const SCRAPE_BOTS_JS = `(async () => {${BOT_DOM_HELPERS}
+  const expanded = await expand();
   const out = [], seen = new Set();
-  document.querySelectorAll('a[href]').forEach(a => {
-    if (!isBot(a)) return;
+  botLinks().forEach(a => {
     const url = new URL(a.getAttribute('href'), location.href).href;
     if (seen.has(url)) return;
     const name = (a.innerText || a.textContent || '').trim().split('\\n')[0].trim();
     if (!name) return;
     const img = a.querySelector('img');
     seen.add(url);
-    out.push({ name, url, avatar: img && /^https:/.test(img.src) ? img.src : null });
+    out.push({ name, url, avatar: img && /^https:/.test(img.src) ? img.src : null, pinned: sectionOf(a) === 'Pinned' });
   });
-  if (more) { const less = findToggle('Show less'); if (less) less.click(); }
+  collapse(expanded);
   return out.slice(0, 50);
+})()`;
+
+// Pin/unpin a bot using grok.com's own bot menu (right-click / "..." -> Pin),
+// so the change is saved to the account exactly as if done in the sidebar.
+const setBotPinnedJs = (url, pinned) => `(async () => {${BOT_DOM_HELPERS}
+  const target = new URL(${JSON.stringify(url)}).pathname;
+  const expanded = await expand();
+  try {
+    const a = botLinks().find(x => botPath(x) === target);
+    if (!a) return { error: 'bot not found in sidebar' };
+    if ((sectionOf(a) === 'Pinned') === ${pinned ? 'true' : 'false'}) return { ok: true, unchanged: true };
+    const wantLabel = ${JSON.stringify(pinned ? 'Pin' : 'Unpin')};
+    const findItem = () => [...document.querySelectorAll('[role="menu"] [role="menuitem"]')]
+      .find(i => leafText(i) === wantLabel);
+    const waitItem = async () => { for (let i = 0; i < 20; i++) { const it = findItem(); if (it) return it; await sleep(50); } return null; };
+    const r = a.getBoundingClientRect();
+    a.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: r.left + 10, clientY: r.top + 10 }));
+    let item = await waitItem();
+    if (!item) {
+      // Fall back to the row's "..." button (Radix menus open on pointerdown)
+      let row = a;
+      for (let i = 0; i < 6 && row && !row.querySelector('button'); i++) row = row.parentElement;
+      const btn = row && [...row.querySelectorAll('button')].pop();
+      if (btn) {
+        btn.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, pointerType: 'mouse' }));
+        btn.click();
+        item = await waitItem();
+      }
+    }
+    if (!item) {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      return { error: 'Pin menu item not found' };
+    }
+    item.click();
+    await sleep(400);
+    return { ok: true };
+  } finally {
+    collapse(expanded);
+  }
 })()`;
 function findGrokTab() {
   return webContents.getAllWebContents().find(c => {
@@ -778,7 +856,7 @@ async function getBots(fresh) {
   const wc = fresh && findGrokTab();
   if (wc) {
     try {
-      const bots = await Promise.race([wc.executeJavaScript(SCRAPE_BOTS_JS), new Promise(r => setTimeout(() => r(null), 2500))]);
+      const bots = await Promise.race([wc.executeJavaScript(SCRAPE_BOTS_JS), new Promise(r => setTimeout(() => r(null), 4000))]);
       if (Array.isArray(bots) && bots.length) {
         writeSettings({ bots });
         logUsageDebug({ bots });
@@ -789,6 +867,29 @@ async function getBots(fresh) {
   const cached = readSettings().bots;
   return Array.isArray(cached) ? cached.filter(b => b && isInAppUrl(b.url)) : [];
 }
+
+// Keep the bot cache warm so the first flyout open is complete: refresh a
+// few seconds after a grok.com tab loads, and every 5 minutes.
+let botRefreshTimer = null;
+function scheduleBotRefresh(delay) {
+  clearTimeout(botRefreshTimer);
+  botRefreshTimer = setTimeout(() => { getBots(true).catch(() => {}); }, delay);
+}
+setInterval(() => { if (findGrokTab()) getBots(true).catch(() => {}); }, 5 * 60 * 1000);
+
+ipcMain.handle('bot-set-pinned', async (_event, { url, pinned } = {}) => {
+  const wc = findGrokTab();
+  if (!wc || typeof url !== 'string' || !isInAppUrl(url)) return { error: 'No Grok tab open' };
+  try {
+    const res = await Promise.race([
+      wc.executeJavaScript(setBotPinnedJs(url, !!pinned)),
+      new Promise(r => setTimeout(() => r({ error: 'timeout' }), 6000))
+    ]);
+    return { ...res, bots: await getBots(true) };
+  } catch (e) {
+    return { error: e.message };
+  }
+});
 
 // Data for the renderer's new-tab flyout
 ipcMain.handle('new-tab-menu-data', async (_event, opts) => {
@@ -942,7 +1043,10 @@ app.on('web-contents-created', (_event, contents) => {
   if (contents.getType() !== 'webview') return;
   contents.on('dom-ready', () => {
     try {
-      if (new URL(contents.getURL()).hostname === 'grok.com') contents.executeJavaScript(BOT_MENU_INJECT_JS).catch(() => {});
+      if (new URL(contents.getURL()).hostname === 'grok.com') {
+        contents.executeJavaScript(BOT_MENU_INJECT_JS).catch(() => {});
+        scheduleBotRefresh(4000);
+      }
     } catch (_) {}
   });
 });
@@ -1087,7 +1191,18 @@ function attachShortcutHandlers(contents) {
     contents.on('before-input-event', (event, input) => {
       try {
         // Only handle keyDown with Control on Windows/Linux
-        if (input.type !== 'keyDown' || !input.control) return;
+        if (input.type !== 'keyDown') return;
+        // F1..F10 -> Build CLI folders (pinned, then recent)
+        if (!input.control && !input.alt && !input.shift && !input.meta && /^F([1-9]|10)$/.test(input.key)) {
+          const h = contents.hostWebContents || contents;
+          const w = BrowserWindow.fromWebContents(h);
+          if (w && !w.isDestroyed()) {
+            event.preventDefault();
+            w.webContents.send('shortcut-build-index', Number(input.key.slice(1)));
+          }
+          return;
+        }
+        if (!input.control) return;
 
         const key = input.key;
         // Deliver to the hosting window (handles webviews as well)
@@ -1095,10 +1210,10 @@ function attachShortcutHandlers(contents) {
         const win = BrowserWindow.fromWebContents(host);
         if (!win || win.isDestroyed()) return;
 
-        // Ctrl+Shift+1..9 -> numbered flyout entries (bots, then Build folders)
-        if (input.shift && /^Digit[1-9]$/.test(input.code || '')) {
+        // Ctrl+Shift+1..9,0 -> bots 1..10
+        if (input.shift && /^Digit[0-9]$/.test(input.code || '')) {
           event.preventDefault();
-          win.webContents.send('shortcut-flyout-index', Number(input.code.slice(5)));
+          win.webContents.send('shortcut-bot-index', Number(input.code.slice(5)) || 10);
           return;
         }
         // Ctrl+Shift+N -> Build CLI in a new folder

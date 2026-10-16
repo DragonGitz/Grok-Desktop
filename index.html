@@ -147,24 +147,30 @@
     .new-tab-button {
       background: none;
       border: none;
-      font-size: 20px;
+      font-size: 18px;
+      line-height: 1;
       cursor: pointer;
       width: 30px;
-      height: 40px;
+      height: 30px;
+      padding: 0;
+      border-radius: 4px;
       display: flex;
       align-items: center;
       justify-content: center;
-      margin-left: 5px;
+      margin-left: 4px;
       color: var(--color-text);
     }
 
     .new-tab-group {
       display: flex;
       align-items: center;
+      align-self: center;
+      gap: 2px;
+      flex: 0 0 auto;
     }
 
     .new-tab-group .new-tab-menu-button {
-      width: 30px;
+      width: 28px;
       margin-left: 0;
     }
 
@@ -337,10 +343,14 @@
 
     .usage-stat.clickable {
       cursor: pointer;
+      padding: 1px 6px;
+      margin: 0 -6px;
+      border-radius: 4px;
+      transition: background-color 0.15s ease;
     }
 
-    .usage-stat.clickable:hover .usage-value {
-      text-decoration: underline;
+    .usage-stat.clickable:hover {
+      background-color: var(--color-hover, rgba(127, 127, 127, 0.18));
     }
 
     .usage-status-bar.usage-hidden .usage-stat {
@@ -485,7 +495,9 @@
         (data.bots || []).forEach(b => numbered.push({ kind: 'bot', bot: b, run: () => tabManager.createTab(b.url) }));
         (data.pinned || []).forEach(f => numbered.push({ kind: 'folder', folder: f, pinned: true, run: () => openBuild(f) }));
         (data.recent || []).forEach(f => numbered.push({ kind: 'folder', folder: f, pinned: false, run: () => openBuild(f) }));
-        numbered.forEach((a, i) => { if (i < 9) a.shortcut = `Ctrl+Shift+${i + 1}`; });
+        // Bots 1-10: Ctrl+Shift+1..9,0 / Build folders 1-10: F1..F10
+        numbered.filter(a => a.kind === 'bot').forEach((a, i) => { if (i < 10) a.shortcut = `Ctrl+Shift+${(i + 1) % 10}`; });
+        numbered.filter(a => a.kind === 'folder').forEach((a, i) => { if (i < 10) a.shortcut = `F${i + 1}`; });
         return numbered;
       },
 
@@ -502,10 +514,10 @@
         if (folder) this.openBuild(folder, data);
       },
 
-      async runIndex(n) {
+      async runIndex(kind, n) {
         const data = await ipcRenderer.invoke('new-tab-menu-data', { fresh: false });
-        const a = this.buildActions(data)[n - 1];
-        if (a && !(a.kind === 'folder' && a.missing)) a.run();
+        const a = this.buildActions(data).filter(x => x.kind === kind)[n - 1];
+        if (a && !(kind === 'folder' && (data.missing || []).includes(a.folder))) a.run();
       },
 
       toggle(anchor) {
@@ -584,9 +596,17 @@
         header('Bots');
         const bots = actions.filter(a => a.kind === 'bot');
         if (!bots.length) row({ icon: 'bot', label: 'No bots found yet', disabled: true, title: 'Open grok.com in a tab so the sidebar can be read' });
+        const setPinned = async (bot, pinned) => {
+          const res = await ipcRenderer.invoke('bot-set-pinned', { url: bot.url, pinned });
+          if (res && res.error) console.warn('Grok Desktop: bot pin failed:', res.error);
+          this.render(await ipcRenderer.invoke('new-tab-menu-data', { fresh: false }));
+        };
         bots.forEach(a => row({
           iconHtml: a.bot.avatar ? `<img class="gd-avatar" src="${gdEsc(a.bot.avatar)}" alt="">` : null,
-          icon: 'bot', label: a.bot.name, shortcut: a.shortcut, title: a.bot.url, onClick: a.run
+          icon: 'bot', label: a.bot.name, shortcut: a.shortcut, title: a.bot.url, onClick: a.run,
+          extras: [a.bot.pinned
+            ? { icon: 'pin', on: true, title: 'Unpin (on grok.com)', click: () => setPinned(a.bot, false) }
+            : { icon: 'pin', title: 'Pin (on grok.com)', click: () => setPinned(a.bot, true) }]
         }));
         if (data.botApp) row({ icon: 'app', label: 'Open Grok Bot', onClick: () => ipcRenderer.invoke('open-grok-bot') });
 
@@ -1188,8 +1208,9 @@
         tab.term.write(`\r\n\x1b[90m[grok exited with code ${code}]\x1b[0m\r\n`);
       }
     });
-    // Flyout shortcuts (Ctrl+Shift+1..9, Ctrl+Shift+N)
-    ipcRenderer.on('shortcut-flyout-index', (_event, n) => newTabFlyout.runIndex(n));
+    // Flyout shortcuts (Ctrl+Shift+1..9,0 bots; F1..F10 folders; Ctrl+Shift+N)
+    ipcRenderer.on('shortcut-bot-index', (_event, n) => newTabFlyout.runIndex('bot', n));
+    ipcRenderer.on('shortcut-build-index', (_event, n) => newTabFlyout.runIndex('folder', n));
     ipcRenderer.on('shortcut-build-new', () => newTabFlyout.newBuild());
     ipcRenderer.on('open-about-tab', (event, aboutUrl) => {
       tabManager.createTab(aboutUrl);
@@ -1312,6 +1333,7 @@
           const DAY = 86400000, now = Date.now();
           const elapsed = Math.max(0.1, (now - startMs) / DAY);
           const left = Math.max(0.1, (endMs - now) / DAY);
+          // 14.2% per day is the goal.
           const avg = w.usagePercent / elapsed;
           lines.push(`Avg since reset: ${avg.toFixed(1)}%/day`);
           lines.push(`Left per day: ${(Math.max(0, 100 - w.usagePercent) / left).toFixed(1)}%/day`);
