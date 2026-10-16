@@ -1,6 +1,54 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
-  <rect width="512" height="512" rx="50" fill="#1DA1F2" />
-  <path d="M256 120 C 180 120, 120 180, 120 256 C 120 332, 180 392, 256 392 C 332 392, 392 332, 392 256 C 392 180, 332 120, 256 120 Z M 256 150 C 315 150, 362 197, 362 256 C 362 315, 315 362, 256 362 C 197 362, 150 315, 150 256 C 150 197, 197 150, 256 150 Z" fill="white" />
-  <path d="M256 180 L 256 256 L 320 300" stroke="white" stroke-width="25" stroke-linecap="round" fill="none" />
-  <circle cx="256" cy="256" r="15" fill="white" />
-</svg> 
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="45%" r="70%">
+      <stop offset="0" stop-color="#1b1640"/>
+      <stop offset="0.6" stop-color="#0b0a1f"/>
+      <stop offset="1" stop-color="#040409"/>
+    </radialGradient>
+    <linearGradient id="disk" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#ff5a1f"/>
+      <stop offset="0.3" stop-color="#ffb347"/>
+      <stop offset="0.5" stop-color="#fff4d6"/>
+      <stop offset="0.7" stop-color="#ffb347"/>
+      <stop offset="1" stop-color="#ff5a1f"/>
+    </linearGradient>
+    <radialGradient id="halo" cx="50%" cy="50%" r="50%">
+      <stop offset="0.55" stop-color="#ff9b3d" stop-opacity="0"/>
+      <stop offset="0.66" stop-color="#ffd27a" stop-opacity="0.95"/>
+      <stop offset="0.74" stop-color="#ff7a2e" stop-opacity="0.45"/>
+      <stop offset="1" stop-color="#ff5a1f" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="14" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <clipPath id="front"><rect x="-600" y="0" width="1200" height="600"/></clipPath>
+    <clipPath id="back"><rect x="-600" y="-600" width="1200" height="600"/></clipPath>
+  </defs>
+  <rect x="32" y="32" width="960" height="960" rx="210" fill="url(#bg)"/>
+  <g fill="#fff" opacity="0.7">
+    <circle cx="210" cy="230" r="5"/><circle cx="800" cy="190" r="4"/><circle cx="840" cy="760" r="5"/>
+    <circle cx="170" cy="700" r="3"/><circle cx="690" cy="860" r="3"/><circle cx="330" cy="140" r="3"/>
+  </g>
+  <g transform="translate(512 520) rotate(-18)">
+    <!-- far side of the disk -->
+    <g clip-path="url(#back)" filter="url(#glow)">
+      <ellipse rx="400" ry="96" fill="none" stroke="url(#disk)" stroke-width="46" opacity="0.85"/>
+    </g>
+    <!-- lensed photon ring -->
+    <circle r="250" fill="url(#halo)"/>
+    <!-- light from the far disk bent over and under the hole -->
+    <g filter="url(#glow)">
+      <path d="M -222 70 L -222 -8 A 222 205 0 0 1 222 -8 L 222 70" fill="none" stroke="url(#disk)" stroke-width="34" stroke-linecap="round"/>
+      <path d="M -196 30 A 196 170 0 0 0 196 30" fill="none" stroke="#ffc46b" stroke-width="9" opacity="0.8" stroke-linecap="round"/>
+    </g>
+    <!-- event horizon -->
+    <circle r="168" fill="#000"/>
+    <circle r="168" fill="none" stroke="#ffe3a8" stroke-width="7" opacity="0.9"/>
+    <!-- near side of the disk, in front of the hole -->
+    <g clip-path="url(#front)" filter="url(#glow)">
+      <ellipse rx="400" ry="96" fill="none" stroke="url(#disk)" stroke-width="58"/>
+      <ellipse rx="400" ry="96" fill="none" stroke="#fffaf0" stroke-width="10" opacity="0.8"/>
+    </g>
+  </g>
+</svg>

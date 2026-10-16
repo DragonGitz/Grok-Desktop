@@ -1,6 +1,6 @@
 {
   "name": "Grok-Desktop",
-  "version": "2.0.4",
+  "version": "2.0.5",
   "description": "Grok-Desktop application for Grok.com with tab support",
   "main": "src/main.js",
   "scripts": {
@@ -64,7 +64,7 @@
         "msi",
         "portable"
       ],
-      "icon": "src/grok.png",
+      "icon": "src/app-icon.ico",
       "forceCodeSigning": false,
       "artifactName": "Grok-Desktop_Archive-v${version}.${ext}"
     },

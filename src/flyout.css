@@ -1,0 +1,55 @@
+/* New-tab flyout (Windows Terminal style) */
+.gd-flyout {
+  position: fixed;
+  z-index: 10000;
+  min-width: 320px;
+  max-width: 420px;
+  max-height: calc(100vh - 80px);
+  overflow-y: auto;
+  padding: 4px;
+  background: #2b2b2b;
+  color: #f3f3f3;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  font-size: 13px;
+  user-select: none;
+}
+.gd-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 32px;
+  padding: 0 10px;
+  border-radius: 4px;
+  cursor: default;
+}
+.gd-row:hover { background: rgba(255, 255, 255, 0.07); }
+.gd-row.disabled { opacity: 0.45; }
+.gd-row.disabled:hover { background: none; }
+.gd-row-icon { width: 16px; height: 16px; flex: 0 0 16px; display: inline-flex; align-items: center; justify-content: center; }
+.gd-icon { width: 16px; height: 16px; }
+.gd-avatar { width: 16px; height: 16px; border-radius: 50%; object-fit: cover; }
+.gd-row-label { flex: 1 1 auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gd-row-label.bold { font-weight: 600; }
+.gd-row-shortcut { flex: 0 0 auto; color: #9d9d9d; font-size: 12px; padding-left: 16px; }
+.gd-row-actions { display: inline-flex; gap: 2px; flex: 0 0 50px; justify-content: flex-start; }
+.gd-row-shortcut { min-width: 96px; text-align: right; }
+.gd-row.one-slot .gd-row-actions { flex-basis: 24px; }
+.gd-row-sub { display: block; font-size: 11px; color: #8a8a8a; overflow: hidden; text-overflow: ellipsis; }
+.gd-row:has(.gd-row-sub) { height: 40px; }
+.gd-row-btn {
+  display: inline-flex; color: #7a7a7a;
+  width: 24px; height: 24px;
+  align-items: center; justify-content: center;
+  background: none; border: none; border-radius: 4px;
+  color: #c8c8c8; cursor: pointer; padding: 0;
+}
+.gd-row-btn.on { color: #60cdff; }
+.gd-row-btn.hover, .gd-row-btn.spacer { visibility: hidden; }
+.gd-row:hover .gd-row-btn.hover { visibility: visible; }
+.gd-row-btn.spacer { cursor: default; }
+.gd-row-btn:hover { background: rgba(255, 255, 255, 0.1); color: #fff; }
+.gd-sep { height: 1px; margin: 4px 2px; background: rgba(255, 255, 255, 0.08); }
+.gd-header { padding: 6px 10px 2px; font-size: 11px; color: #9d9d9d; }

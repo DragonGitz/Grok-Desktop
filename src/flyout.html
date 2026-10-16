@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline'; img-src 'self' https: data:">
+  <link rel="stylesheet" href="flyout.css">
+  <style>
+    html, body { margin: 0; background: transparent; overflow: hidden; height: 100%;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: 14px; }
+  </style>
+</head>
+<body>
+  <script>
+    // Popup host for the new-tab flyout: a frameless transparent window that
+    // may extend past the app window. Tab actions are forwarded to the app.
+    const { ipcRenderer } = require('electron');
+    window.GD_POPUP = true;
+    const tabManager = {
+      createTab: (url) => ipcRenderer.send('flyout-forward', 'createTab', url),
+      createTerminalTab: (folder, opts) => ipcRenderer.send('flyout-forward', 'createTerminalTab', folder, opts || {})
+    };
+  </script>
+  <script src="flyout.js"></script>
+  <script>
+    ipcRenderer.on('flyout-show', () => { newTabFlyout.close(true); newTabFlyout.open(document.body); });
+    ipcRenderer.on('flyout-hidden', () => newTabFlyout.close(true));
+  </script>
+</body>
+</html>

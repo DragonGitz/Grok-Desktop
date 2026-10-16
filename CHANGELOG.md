@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on Keep a Changelog, and this project adheres to Semantic Versioning.
 
 
+## [2.0.5] - 2026-10-16 (Dragonified fork)
+
+### Changed
+- **New app icon** - original black-hole / accretion-disk artwork (assets/icon.svg) replaces the Grok logo (an xAI trademark) for the window, taskbar and builds.
+- **Dropdown** opens as its own popup window, so it can extend past the app window (clamped to the screen work area, scrolls if taller); falls back to the in-window menu.
+- **grok.com sidebar** - Chat / Imagine / Library / Automations shown as one row of icon buttons with tooltips (set `compactSidebar: false` in grok-desktop-settings.json to disable).
+- Bot rows: pin sits right after the shortcut. Build trash tooltip is "Hide from list"; "Show hidden (N)" restores hidden entries.
+
+### Fixed
+- **Build list duplicates** - unused stub CLI sessions (no messages, no title, never active) are hidden; near-duplicate untitled sessions in the same folder within 15 minutes collapse to the one with more content.
+- **Bot pins** - the toggle updates at once and re-syncs afterwards; the sidebar is nudged to refetch before reading so pins changed elsewhere show up.
+
 ## [2.0.4] - 2026-10-16 (Dragonified fork)
 
 ### Fixed

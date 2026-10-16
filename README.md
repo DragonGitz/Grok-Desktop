@@ -15,6 +15,8 @@ Welcome to the **Dragonified** fork of [Grok Desktop](https://github.com/AnRkey/
 
 ---
 
+> **New icon (v2.0.5):** this fork uses an original black-hole / accretion-disk icon (`assets/icon.svg`) instead of the Grok logo, which is an xAI trademark.
+
 ## 🔥 What's new in the Dragonified build
 
 ### 📊 A usage meter that tells the truth (finally)

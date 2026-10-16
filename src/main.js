@@ -1,5 +1,5 @@
 
-const { app, BrowserWindow, shell, Menu, ipcMain, nativeTheme, session, webContents, dialog } = require('electron');
+const { app, BrowserWindow, shell, Menu, ipcMain, nativeTheme, session, webContents, dialog, screen } = require('electron');
 const os = require('os');
 const fs = require('fs');
 const { exec } = require('child_process');
@@ -298,7 +298,7 @@ function createWindow() {
       webviewTag: true, // Enable webview tag for tabs
       spellcheck: true
     },
-    icon: path.join(__dirname, 'grok.png')
+    icon: path.join(__dirname, 'app-icon.png')
   });
 
   // Disable the menu bar
@@ -740,7 +740,11 @@ function listCliSessions() {
         let cwd = j.info && j.info.cwd;
         if (!cwd) { try { cwd = decodeURIComponent(d.name); } catch (_) { continue; } }
         if (!UUID_RE.test(id) || !cwd) continue;
+        const msgs = Number(j.num_messages) || 0;
         out.push({
+          // Stub: started but never used (no messages, no title, never active)
+          stub: !msgs && !j.generated_title && !j.session_summary && !j.last_active_at,
+          size: msgs,
           key: 's:' + id, sessionId: id, folder: cwd,
           title: String(j.generated_title || j.session_summary || '').trim() || null,
           updated: Date.parse(j.last_active_at || j.updated_at || j.created_at) || 0
@@ -748,7 +752,12 @@ function listCliSessions() {
       } catch (_) { /* no or partial summary yet */ }
     }
   }
-  return out.sort((a, b) => b.updated - a.updated);
+  out.sort((a, b) => b.updated - a.updated);
+  // Near-duplicates: sessions in the same folder within 15 minutes of each
+  // other where one is untitled; keep the one with more content.
+  const keep = out.filter(s => !s.stub);
+  return keep.filter(s => !keep.some(o => o !== s && samePath(o.folder, s.folder) && !s.title &&
+    Math.abs(o.updated - s.updated) < 15 * 60 * 1000 && (o.size > s.size || (o.size === s.size && o.updated > s.updated))));
 }
 
 // Build CLI entries: CLI sessions plus manually opened folders that have no
@@ -771,7 +780,7 @@ function buildFolders() {
   const pinned = pinKeys.map(k => all.find(e => e.key === k)).filter(Boolean).map(e => ({ ...e, pinned: true }));
   const recent = all.filter(e => !pinKeys.includes(e.key) && !e.missing)
     .sort((a, b) => b.updated - a.updated).slice(0, MAX_RECENT);
-  return { pinned, recent, pinKeys, hidden, recentFolders, recentAt };
+  return { pinned, recent, pinKeys, hidden, recentFolders, recentAt, hiddenCount: hidden.length };
 }
 function touchRecent(folder) {
   const { recentFolders, recentAt } = buildFolders();
@@ -893,6 +902,14 @@ const BOT_DOM_HELPERS = `
 // tab's sidebar: "Show more" is expanded until the list settles, then
 // collapsed again. Pinned state comes from the sidebar's "Pinned" section.
 const SCRAPE_BOTS_JS = `(async () => {${BOT_DOM_HELPERS}
+  // grok.com's data layer refetches on focus/visibility: nudge it so pins
+  // changed elsewhere (Grok Bot app, other devices) show without a reload
+  try {
+    window.dispatchEvent(new Event('focus'));
+    document.dispatchEvent(new Event('visibilitychange'));
+    window.dispatchEvent(new Event('online'));
+  } catch (_) {}
+  await sleep(700);
   const expanded = await expand();
   const out = [], seen = new Set();
   botLinks().forEach(a => {
@@ -1001,11 +1018,71 @@ ipcMain.handle('bot-set-pinned', async (_event, { url, pinned } = {}) => {
   }
 });
 
+// New-tab flyout as a frameless transparent popup window, so it can extend
+// past the app window; clamped to the display work area.
+let flyoutWin = null, flyoutHiddenAt = 0, flyoutAnchor = null;
+function ensureFlyoutWin() {
+  if (flyoutWin && !flyoutWin.isDestroyed()) return flyoutWin;
+  flyoutWin = new BrowserWindow({
+    parent: mainWindow, frame: false, transparent: true, backgroundColor: '#00000000', hasShadow: false,
+    resizable: false, movable: false, minimizable: false, maximizable: false, fullscreenable: false,
+    skipTaskbar: true, show: false, width: 460, height: 600,
+    webPreferences: { nodeIntegration: true, contextIsolation: false }
+  });
+  flyoutWin.setMenu(null);
+  flyoutWin.loadFile(path.join(__dirname, 'flyout.html'));
+  flyoutWin.on('blur', () => hideFlyout());
+  flyoutWin.on('closed', () => { flyoutWin = null; });
+  return flyoutWin;
+}
+function hideFlyout() {
+  if (flyoutWin && !flyoutWin.isDestroyed() && flyoutWin.isVisible()) {
+    flyoutWin.hide();
+    flyoutHiddenAt = Date.now();
+    flyoutWin.webContents.send('flyout-hidden');
+  }
+}
+ipcMain.handle('flyout-open', async (_event, rect = {}) => {
+  try {
+    if (!mainWindow || !Number.isFinite(rect.left) || !Number.isFinite(rect.bottom)) return false;
+    if (Date.now() - flyoutHiddenAt < 300) return true; // the click that closed it: just toggle off
+    const w = ensureFlyoutWin();
+    const cb = mainWindow.getContentBounds();
+    flyoutAnchor = { x: Math.round(cb.x + rect.left), y: Math.round(cb.y + rect.bottom) };
+    if (w.webContents.isLoading()) await new Promise(r => w.webContents.once('did-finish-load', r));
+    w.webContents.send('flyout-show');
+    return true;
+  } catch (e) {
+    console.warn('Grok Desktop: popup flyout failed, using in-window menu:', e.message);
+    return false;
+  }
+});
+ipcMain.on('flyout-size', (_event, width, height) => {
+  if (!flyoutWin || flyoutWin.isDestroyed() || !flyoutAnchor) return;
+  const wa = screen.getDisplayNearestPoint(flyoutAnchor).workArea;
+  const PAD = 10;
+  const W = Math.min(Math.ceil(width) || 400, wa.width);
+  const H = Math.min(Math.ceil(height) || 300, wa.height);
+  const x = Math.max(wa.x, Math.min(flyoutAnchor.x - 8 - PAD, wa.x + wa.width - W));
+  let y = flyoutAnchor.y + 4 - PAD;
+  if (y + H > wa.y + wa.height) y = Math.max(wa.y, wa.y + wa.height - H);
+  flyoutWin.setBounds({ x, y, width: W, height: H });
+  if (!flyoutWin.isVisible()) { flyoutWin.show(); flyoutWin.focus(); }
+});
+ipcMain.on('flyout-hide', () => hideFlyout());
+ipcMain.on('flyout-forward', (_event, method, ...args) => {
+  if ((method === 'createTab' || method === 'createTerminalTab') && mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('flyout-run', method, ...args);
+    mainWindow.focus();
+  }
+});
+
 // Data for the renderer's new-tab flyout
 ipcMain.handle('new-tab-menu-data', async (_event, opts) => {
   const cli = findGrokCli();
-  const { pinned, recent } = buildFolders();
+  const { pinned, recent, hiddenCount } = buildFolders();
   return {
+    hiddenCount,
     bots: await getBots(!!(opts && opts.fresh)),
     botApp: !!findGrokBot(),
     cli: !!cli,
@@ -1036,6 +1113,7 @@ ipcMain.handle('build-folders-update', (_event, { action, folder, key } = {}) =>
   if (action === 'pin') writeSettings({ buildPinKeys: [...without(pinKeys), key] });
   else if (action === 'unpin') writeSettings({ buildPinKeys: without(pinKeys) });
   // "Remove" only hides the entry here; the CLI's session files are left alone
+  else if (action === 'unhide-all') writeSettings({ buildHidden: [] });
   else if (action === 'remove') writeSettings({ buildPinKeys: without(pinKeys), buildHidden: [...without(hidden), key].slice(-500) });
   return buildFolders();
 });
@@ -1110,6 +1188,46 @@ const NET_CAPTURE_JS = `(() => {
 })()`;
 const usageDebugOn = () => { try { return process.env.GROK_DESKTOP_USAGE_DEBUG === '1' || fs.existsSync(path.join(app.getPath('userData'), 'usage-debug')); } catch (_) { return false; } };
 
+// grok.com sidebar: show the top nav (Chat, Imagine, Library, Automations)
+// as one row of icon-only buttons with tooltips. Disable with
+// "compactSidebar": false in grok-desktop-settings.json.
+const COMPACT_NAV_JS = `(() => {
+  if (window.__gdCompactNav) return; window.__gdCompactNav = true;
+  const LABELS = ['Chat', 'Imagine', 'Library', 'Automations'];
+  const st = document.createElement('style');
+  st.textContent = '.gd-nav-row{display:flex!important;flex-direction:row!important;flex-wrap:nowrap!important;gap:4px!important;align-items:center!important}' +
+    '.gd-nav-row>*{width:auto!important;min-width:0!important;flex:0 0 auto!important}' +
+    'a.gd-nav-btn{width:auto!important;justify-content:center!important;padding-left:10px!important;padding-right:10px!important;gap:0!important}' +
+    '.gd-nav-hide{display:none!important}';
+  (document.head || document.documentElement).appendChild(st);
+  const text = (e) => (e.textContent || '').trim();
+  const apply = () => {
+    const links = LABELS.map(l => [...document.querySelectorAll('a[href]')].find(a => text(a) === l && a.querySelector('svg'))).filter(Boolean);
+    if (links.length < 3) return;
+    let box = links[0].parentElement;
+    while (box && !links.every(a => box.contains(a))) box = box.parentElement;
+    if (!box || box === document.body) return;
+    // Only in the expanded sidebar; the collapsed rail is already icon-only
+    if (box.getBoundingClientRect().width < 160) { box.classList.remove('gd-nav-row'); return; }
+    box.classList.add('gd-nav-row');
+    links.forEach(a => {
+      a.classList.add('gd-nav-btn');
+      if (!a.title) a.title = text(a);
+      a.setAttribute('aria-label', a.title);
+      [...a.querySelectorAll('*')].forEach(n => {
+        if (n.matches('svg, svg *') || n.querySelector('svg')) return;
+        if (text(n)) n.classList.add('gd-nav-hide');
+      });
+      // Bare text nodes directly in the link
+      [...a.childNodes].forEach(n => { if (n.nodeType === 3 && n.textContent.trim()) { const s = document.createElement('span'); s.className = 'gd-nav-hide'; n.replaceWith(s); s.appendChild(n); } });
+    });
+  };
+  let t = null;
+  new MutationObserver(() => { clearTimeout(t); t = setTimeout(apply, 150); }).observe(document.documentElement, { childList: true, subtree: true });
+  window.addEventListener('resize', () => { clearTimeout(t); t = setTimeout(apply, 150); });
+  apply();
+})()`;
+
 const BOT_MENU_INJECT_JS = `(() => {
   if (window.__gdBotMenu) return;
   window.__gdBotMenu = true;
@@ -1176,6 +1294,7 @@ app.on('web-contents-created', (_event, contents) => {
     try {
       if (new URL(contents.getURL()).hostname === 'grok.com') {
         contents.executeJavaScript(BOT_MENU_INJECT_JS).catch(() => {});
+        if (readSettings().compactSidebar !== false) contents.executeJavaScript(COMPACT_NAV_JS).catch(() => {});
         if (usageDebugOn() && !contents.__gdNetHooked) {
           contents.__gdNetHooked = true;
           contents.on('console-message', (...args) => {
