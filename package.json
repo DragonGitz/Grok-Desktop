@@ -26,6 +26,9 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@lydell/node-pty": "^1.2.0-beta.15",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
     "electron-tabs": "^1.0.4"
   },
   "devDependencies": {
@@ -81,7 +84,9 @@
     },
     "compression": "maximum",
     "asar": true,
-    "asarUnpack": [],
+    "asarUnpack": [
+      "node_modules/@lydell/**"
+    ],
     "extraResources": [],
     "files": [
       "**/*",

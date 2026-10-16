@@ -717,7 +717,7 @@ function launchCliIn(folder, cli) {
   }
 }
 
-const MAX_RECENT = 15;
+const MAX_RECENT = 10;
 const samePath = (a, b) => process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
 function buildFolders() {
   const st = readSettings();
@@ -743,38 +743,42 @@ async function pickBuildFolder() {
   return res.canceled || !res.filePaths[0] ? null : res.filePaths[0];
 }
 
-// Bots listed in grok.com's sidebar, scraped from the signed-in Grok tab
-// (links to /bot/<id>; section fallback under the "Bots" heading). The last
-// known list is cached in settings for when no Grok tab is loaded.
-const SCRAPE_BOTS_JS = `(() => {
+// Bots listed in grok.com's sidebar (links to /bot/<id>, the app route in
+// grok.com's bundle). Read from the signed-in Grok tab, expanding the Bots
+// "Show more" list briefly so all bots are included, and cached in settings.
+const SCRAPE_BOTS_JS = `(async () => {
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+  const isBot = (a) => { try { return /^\\/bot\\/[^/?#]+/.test(new URL(a.getAttribute('href'), location.href).pathname); } catch (_) { return false; } };
+  const heading = [...document.querySelectorAll('nav *, aside *')].find(e => !e.children.length && e.textContent.trim() === 'Bots');
+  const after = (e) => !heading || (heading.compareDocumentPosition(e) & Node.DOCUMENT_POSITION_FOLLOWING);
+  const findToggle = (label) => [...document.querySelectorAll('nav button, aside button, nav [role="button"], aside [role="button"]')]
+    .find(e => e.textContent.trim() === label && after(e));
+  const more = findToggle('Show more');
+  if (more) { more.click(); await sleep(300); }
   const out = [], seen = new Set();
-  const add = (a) => {
-    try {
-      const u = new URL(a.getAttribute('href'), location.href);
-      if (u.origin !== location.origin || /^\\/c\\//.test(u.pathname) || seen.has(u.href)) return;
-      const name = (a.innerText || a.textContent || '').trim().split('\\n')[0].trim();
-      if (!name) return;
-      seen.add(u.href); out.push({ name, url: u.href });
-    } catch (_) {}
-  };
   document.querySelectorAll('a[href]').forEach(a => {
-    try { if (/^\\/bots?\\/[^/?#]+/.test(new URL(a.getAttribute('href'), location.href).pathname)) add(a); } catch (_) {}
+    if (!isBot(a)) return;
+    const url = new URL(a.getAttribute('href'), location.href).href;
+    if (seen.has(url)) return;
+    const name = (a.innerText || a.textContent || '').trim().split('\\n')[0].trim();
+    if (!name) return;
+    const img = a.querySelector('img');
+    seen.add(url);
+    out.push({ name, url, avatar: img && /^https:/.test(img.src) ? img.src : null });
   });
-  if (!out.length) {
-    const h = [...document.querySelectorAll('nav *, aside *')].find(e => !e.children.length && e.textContent.trim() === 'Bots');
-    let sec = h;
-    for (let i = 0; i < 4 && sec && !sec.querySelector('a[href]'); i++) sec = sec.parentElement;
-    if (sec) sec.querySelectorAll('a[href]').forEach(add);
-  }
-  return out.slice(0, 40);
+  if (more) { const less = findToggle('Show less'); if (less) less.click(); }
+  return out.slice(0, 50);
 })()`;
-async function getBots() {
-  const wc = webContents.getAllWebContents().find(c => {
+function findGrokTab() {
+  return webContents.getAllWebContents().find(c => {
     try { return c.getType() === 'webview' && new URL(c.getURL()).hostname === 'grok.com'; } catch (_) { return false; }
   });
+}
+async function getBots(fresh) {
+  const wc = fresh && findGrokTab();
   if (wc) {
     try {
-      const bots = await Promise.race([wc.executeJavaScript(SCRAPE_BOTS_JS), new Promise(r => setTimeout(() => r(null), 1500))]);
+      const bots = await Promise.race([wc.executeJavaScript(SCRAPE_BOTS_JS), new Promise(r => setTimeout(() => r(null), 2500))]);
       if (Array.isArray(bots) && bots.length) {
         writeSettings({ bots });
         logUsageDebug({ bots });
@@ -783,55 +787,164 @@ async function getBots() {
     } catch (_) {}
   }
   const cached = readSettings().bots;
-  return Array.isArray(cached) ? cached : [];
+  return Array.isArray(cached) ? cached.filter(b => b && isInAppUrl(b.url)) : [];
 }
 
-ipcMain.handle('show-new-tab-menu', async (_event, pos) => {
-  if (!mainWindow) return;
-  const bots = await getBots();
-  const openTab = (url) => mainWindow.webContents.send('open-url-in-new-tab', url);
-  const botsSubmenu = [
-    ...(bots.length
-      ? bots.filter(b => isInAppUrl(b.url)).map(b => ({ label: b.name.replace(/&/g, '&&'), click: () => openTab(b.url) }))
-      : [{ label: 'No bots found (open grok.com sidebar)', enabled: false }]),
-    { type: 'separator' },
-    { label: 'All Bots…', click: () => openTab('https://grok.com/bot') }
-  ];
-  const bot = findGrokBot();
+// Data for the renderer's new-tab flyout
+ipcMain.handle('new-tab-menu-data', async (_event, opts) => {
   const cli = findGrokCli();
   const { pinned, recent } = buildFolders();
-  const open = (folder) => { touchRecent(folder); launchCliIn(folder, cli); };
-  const folderItem = (folder, isPinned) => {
-    const missing = !existsSafe(folder);
-    return {
-      label: `${path.basename(folder) || folder}  —  ${folder}${missing ? '  (missing)' : ''}`,
-      submenu: [
-        { label: 'Open', enabled: !missing, click: () => open(folder) },
-        isPinned
-          ? { label: 'Unpin', click: () => saveFolders(pinned.filter(p => !samePath(p, folder)), [folder, ...recent]) }
-          : { label: 'Pin', click: () => saveFolders([...pinned, folder], recent.filter(f => !samePath(f, folder))) },
-        {
-          label: 'Remove', click: () => saveFolders(pinned.filter(p => !samePath(p, folder)),
-            recent.filter(f => !samePath(f, folder)))
-        }
-      ]
-    };
+  return {
+    bots: await getBots(!!(opts && opts.fresh)),
+    botApp: !!findGrokBot(),
+    cli: !!cli,
+    pty: !!(pty && cli),
+    pinned,
+    recent,
+    missing: pinned.filter(f => !existsSafe(f))
   };
-  const cliSubmenu = [
-    { label: 'New…', click: async () => { const f = await pickBuildFolder(); if (f) open(f); } },
-    ...(pinned.length ? [{ type: 'separator' }, ...pinned.map(f => folderItem(f, true))] : []),
-    ...(recent.length ? [{ type: 'separator' }, ...recent.map(f => folderItem(f, false))] : [])
-  ];
-  Menu.buildFromTemplate([
-    { label: 'New Chat', click: () => mainWindow.webContents.send('shortcut-new-tab') },
-    { label: 'Bots', submenu: botsSubmenu },
-    { type: 'separator' },
-    {
-      label: 'Open Grok Bot', visible: !!bot,
-      click: () => { bot.exe ? shell.openPath(bot.exe) : shell.openExternal(bot.protocol); }
-    },
-    cli ? { label: 'Build CLI', submenu: cliSubmenu } : { label: 'Build CLI (grok not found)', enabled: false }
-  ]).popup({ window: mainWindow, x: pos && Math.round(pos.x), y: pos && Math.round(pos.y) });
+});
+ipcMain.handle('open-grok-bot', () => {
+  const bot = findGrokBot();
+  if (!bot) return false;
+  if (bot.exe) shell.openPath(bot.exe); else shell.openExternal(bot.protocol);
+  return true;
+});
+ipcMain.handle('build-pick-folder', () => pickBuildFolder());
+ipcMain.handle('build-launch-external', (_event, folder) => {
+  const cli = findGrokCli();
+  if (cli && existsSafe(folder)) launchCliIn(folder, cli);
+});
+ipcMain.handle('build-folders-update', (_event, { action, folder } = {}) => {
+  if (typeof folder !== 'string' || !folder) return buildFolders();
+  const { pinned, recent } = buildFolders();
+  const without = (list) => list.filter(f => !samePath(f, folder));
+  if (action === 'touch') {
+    if (!pinned.some(p => samePath(p, folder))) saveFolders(pinned, [folder, ...without(recent)]);
+  } else if (action === 'pin') {
+    saveFolders([...without(pinned), folder], without(recent));
+  } else if (action === 'unpin') {
+    saveFolders(without(pinned), [folder, ...without(recent)]);
+  } else if (action === 'remove') {
+    saveFolders(without(pinned), without(recent));
+  }
+  return buildFolders();
+});
+
+// ---- Embedded Build CLI terminals (node-pty, prebuilt binaries) -----------
+let pty = null;
+try { pty = require('@lydell/node-pty'); } catch (e) { console.warn('Grok Desktop: node-pty unavailable, Build CLI opens externally:', e.message); }
+const ptys = new Map();
+let ptySeq = 0;
+ipcMain.handle('pty-spawn', (event, { cwd, cols, rows } = {}) => {
+  const cli = findGrokCli();
+  if (!pty) return { error: 'terminal support (node-pty) is not available' };
+  if (!cli) return { error: 'grok CLI not found' };
+  if (!existsSafe(cwd)) return { error: 'folder not found: ' + cwd };
+  const id = ++ptySeq;
+  let p;
+  try {
+    p = pty.spawn(cli, [], {
+      name: 'xterm-256color',
+      cols: Math.max(20, cols | 0 || 80),
+      rows: Math.max(5, rows | 0 || 24),
+      cwd,
+      env: { ...process.env, TERM: 'xterm-256color', COLORTERM: 'truecolor' }
+    });
+  } catch (e) {
+    return { error: e.message };
+  }
+  ptys.set(id, p);
+  const wc = event.sender;
+  p.onData(d => { if (!wc.isDestroyed()) wc.send('pty-data', id, d); });
+  p.onExit(({ exitCode }) => {
+    ptys.delete(id);
+    if (!wc.isDestroyed()) wc.send('pty-exit', id, exitCode);
+  });
+  return { id };
+});
+ipcMain.on('pty-write', (_event, id, data) => { const p = ptys.get(id); if (p) p.write(data); });
+ipcMain.on('pty-resize', (_event, id, cols, rows) => {
+  const p = ptys.get(id);
+  if (p && cols > 0 && rows > 0) { try { p.resize(cols, rows); } catch (_) {} }
+});
+ipcMain.on('pty-kill', (_event, id) => {
+  const p = ptys.get(id);
+  if (p) { ptys.delete(id); try { p.kill(); } catch (_) {} }
+});
+app.on('before-quit', () => { for (const p of ptys.values()) { try { p.kill(); } catch (_) {} } ptys.clear(); });
+
+// Adds "Open new tab" to grok.com's bot "..." / right-click menu (which lacks
+// it, unlike chats) and makes middle-click / Ctrl+click on bot links open a
+// new tab. Injected into grok.com pages; window.open is routed to a new
+// in-app tab by setWindowOpenHandler.
+const BOT_MENU_INJECT_JS = `(() => {
+  if (window.__gdBotMenu) return;
+  window.__gdBotMenu = true;
+  const SEL = 'a[href*="/bot/"]';
+  const botUrl = (el) => {
+    for (let n = el, i = 0; n && n.nodeType === 1 && i < 8; n = n.parentElement, i++) {
+      if (n.matches(SEL)) return n.href;
+      const found = n.querySelectorAll(SEL);
+      if (found.length === 1) return found[0].href;
+      if (found.length > 1) return null;
+    }
+    return null;
+  };
+  let last = { url: null, t: 0 };
+  const remember = (e) => { last = { url: botUrl(e.target), t: Date.now() }; };
+  document.addEventListener('pointerdown', remember, true);
+  document.addEventListener('contextmenu', remember, true);
+  const openTab = (url) => window.open(url, '_blank');
+  document.addEventListener('auxclick', (e) => {
+    if (e.button !== 1) return;
+    const a = e.target.closest && e.target.closest(SEL);
+    if (a) { e.preventDefault(); e.stopPropagation(); openTab(a.href); }
+  }, true);
+  document.addEventListener('click', (e) => {
+    if (!(e.ctrlKey || e.metaKey) || e.button !== 0) return;
+    const a = e.target.closest && e.target.closest(SEL);
+    if (a) { e.preventDefault(); e.stopPropagation(); openTab(a.href); }
+  }, true);
+  const ICON = '<path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>';
+  new MutationObserver(() => {
+    if (!last.url || Date.now() - last.t > 4000) return;
+    document.querySelectorAll('[role="menu"]').forEach(menu => {
+      if (menu.__gdDone) return;
+      const items = menu.querySelectorAll('[role="menuitem"]');
+      if (!items.length) return;
+      menu.__gdDone = true;
+      if ([...items].some(i => /open (in )?new tab/i.test(i.textContent))) return;
+      const url = last.url;
+      const item = items[0].cloneNode(true);
+      item.removeAttribute('data-highlighted');
+      item.removeAttribute('id');
+      const walker = document.createTreeWalker(item, NodeFilter.SHOW_TEXT);
+      for (let t = walker.nextNode(); t; t = walker.nextNode()) {
+        if (t.nodeValue.trim()) { t.nodeValue = 'Open new tab'; break; }
+      }
+      const svg = item.querySelector('svg');
+      if (svg) { svg.setAttribute('viewBox', '0 0 24 24'); svg.innerHTML = ICON; }
+      item.addEventListener('mouseenter', () => item.setAttribute('data-highlighted', ''));
+      item.addEventListener('mouseleave', () => item.removeAttribute('data-highlighted'));
+      const activate = (e) => {
+        e.preventDefault(); e.stopPropagation();
+        openTab(url);
+        menu.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      };
+      item.addEventListener('pointerup', activate, true);
+      item.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); }, true);
+      items[0].parentElement.insertBefore(item, items[0]);
+    });
+  }).observe(document.documentElement, { childList: true, subtree: true });
+})()`;
+app.on('web-contents-created', (_event, contents) => {
+  if (contents.getType() !== 'webview') return;
+  contents.on('dom-ready', () => {
+    try {
+      if (new URL(contents.getURL()).hostname === 'grok.com') contents.executeJavaScript(BOT_MENU_INJECT_JS).catch(() => {});
+    } catch (_) {}
+  });
 });
 
 function setupContextMenus() {
@@ -982,9 +1095,22 @@ function attachShortcutHandlers(contents) {
         const win = BrowserWindow.fromWebContents(host);
         if (!win || win.isDestroyed()) return;
 
+        // Ctrl+Shift+1..9 -> numbered flyout entries (bots, then Build folders)
+        if (input.shift && /^Digit[1-9]$/.test(input.code || '')) {
+          event.preventDefault();
+          win.webContents.send('shortcut-flyout-index', Number(input.code.slice(5)));
+          return;
+        }
+        // Ctrl+Shift+N -> Build CLI in a new folder
+        if (input.shift && (key === 'n' || key === 'N')) {
+          event.preventDefault();
+          win.webContents.send('shortcut-build-new');
+          return;
+        }
+
         // Ctrl+K -> Remap to Ctrl+Shift+K for grok.com search
         // grok.com responds to Ctrl+Shift+K, not Ctrl+K (which Chromium intercepts for omnibox)
-        if ((key === 'k' || key === 'K') && !input.shift) {
+        if ((key === 'k' || key === 'K') && !input.shift && contents.getType() === 'webview') {
           event.preventDefault();
           // Send Ctrl+Shift+K to the webContents using sendInputEvent (creates trusted OS-level events)
           contents.sendInputEvent({
@@ -1023,7 +1149,7 @@ function attachShortcutHandlers(contents) {
           return;
         }
         // Ctrl+R -> reload active tab (override default window reload)
-        if (key === 'r' || key === 'R') {
+        if ((key === 'r' || key === 'R') && contents.getType() === 'webview') {
           event.preventDefault();
           win.webContents.send('shortcut-reload-tab');
           return;
