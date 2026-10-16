@@ -501,6 +501,10 @@ function readGrokCliToken() {
 
 // Returns { usagePercent, periodEnd, periodType, products, auth } or { error }.
 async function fetchWeeklyBilling(ses) {
+  const cents = (v) => {
+    const n = v && typeof v === 'object' ? Number(v.val) : Number(v);
+    return Number.isFinite(n) ? n : null;
+  };
   const parse = (json, auth) => {
     const c = json && json.config;
     if (!c || typeof c.creditUsagePercent !== 'number') return null;
@@ -509,6 +513,10 @@ async function fetchWeeklyBilling(ses) {
       periodEnd: (c.currentPeriod && c.currentPeriod.end) || c.billingPeriodEnd || null,
       periodType: c.currentPeriod && c.currentPeriod.type,
       products: Array.isArray(c.productUsage) ? c.productUsage : [],
+      // Money fields are int64 wrappers ({ val }) in cents, e.g. prepaidBalance: { val: 257 } = $2.57
+      prepaidCents: cents(c.prepaidBalance),
+      onDemandUsedCents: cents(c.onDemandUsed),
+      onDemandCapCents: cents(c.onDemandCap),
       auth
     };
   };
