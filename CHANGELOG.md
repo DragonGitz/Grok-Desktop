@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on Keep a Changelog, and this project adheres to Semantic Versioning.
 
 
+## [2.0.4] - 2026-10-16 (Dragonified fork)
+
+### Fixed
+- **Tab bar** - + and dropdown sit right after the last tab again; only when tabs overflow do they stay at the right edge of the tab area, next to the scroll arrows.
+
 ## [2.0.3] - 2026-10-16 (Dragonified fork)
 
 ### Fixed

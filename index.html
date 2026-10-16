@@ -75,7 +75,7 @@
 
     .tabs {
       display: flex;
-      flex: 1 1 auto;
+      flex: 0 1 auto;          /* shrink to its tabs so + follows the last tab */
       min-width: 0;            /* allow flex child to shrink so it doesn't push controls */
       overflow-x: auto;        /* scroll just the tabs area */
       overflow-y: hidden;
@@ -191,6 +191,7 @@
       align-items: center;
       padding: 0 5px;
       flex: 0 0 auto;          /* reserve space; never shrink */
+      margin-left: auto;       /* spacer: + / dropdown stay next to the tabs */
       white-space: nowrap;
     }
 
