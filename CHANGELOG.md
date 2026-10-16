@@ -9,7 +9,7 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ### Fixed
 - **Link routing** - Grok/xAI links that open a new window now open in a new tab (the `<webview>` `new-window` event was removed in Electron 22+); sign-in popups (accounts.x.ai, Google, Apple, X OAuth) use a sandboxed child window; external links open in the default browser. Same-tab navigation is enforced in the main process. Allow-list moved to `src/url-policy.js` (hostname-based).
-- **Usage stats** - Updated `/rest/rate-limits` to current mode ids (fast/expert/heavy/auto); "Login required" now only shown on real 401/403.
+- **Usage stats** - Removed the outdated `/rest/rate-limits` per-model display (grok-3 / grok-4-heavy), which no longer reflects real usage; the bar now shows only the weekly meter and reports errors in its tooltip.
 
 ### Added
 - **Weekly usage meter** - Shows the combined weekly usage % from grok.com's billing endpoint (same figure as Settings > Usage), prepaid credits, and reset time (click to toggle countdown). Tooltip shows pace and per-product breakdown.
