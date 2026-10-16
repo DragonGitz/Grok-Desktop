@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on Keep a Changelog, and this project adheres to Semantic Versioning.
 
 
+## [2.0.3] - 2026-10-16 (Dragonified fork)
+
+### Fixed
+- **Tab overflow** - tabs scroll inside their own strip with ‹ › arrows (shown only when overflowing, disabled at the ends); the + and dropdown buttons stay visible to the right of the strip. The active or new tab is scrolled into view; mouse wheel scrolls the strip.
+- **Dropdown** - kept fully inside the window (shifted left near the right edge, height capped with internal scrolling).
+
+### Changed
+- Bot rows have a single right-aligned pin column (Build rows keep pin + hide).
+
 ## [2.0.2] - 2026-10-16 (Dragonified fork)
 
 ### Fixed

@@ -94,7 +94,9 @@
       align-self: center;
       display: none; /* hidden by default; shown only when needed */
     }
-    .tabs-scroll:hover { background-color: var(--color-hover); }
+    .tabs-scroll { align-items: center; justify-content: center; flex: 0 0 28px; align-self: flex-start; }
+    .tabs-scroll:hover:not(:disabled) { background-color: var(--color-hover); }
+    .tabs-scroll:disabled { opacity: 0.3; cursor: default; }
     .tabs-scroll-left { margin-right: 2px; }
     .tabs-scroll-right { margin-left: 2px; }
 
@@ -413,6 +415,7 @@
     .gd-row-shortcut { flex: 0 0 auto; color: #9d9d9d; font-size: 12px; padding-left: 16px; }
     .gd-row-actions { display: inline-flex; gap: 2px; flex: 0 0 50px; justify-content: flex-start; }
     .gd-row-shortcut { min-width: 96px; text-align: right; }
+    .gd-row.one-slot .gd-row-actions { flex-basis: 50px; justify-content: flex-end; }
     .gd-row-sub { display: block; font-size: 11px; color: #8a8a8a; overflow: hidden; text-overflow: ellipsis; }
     .gd-row:has(.gd-row-sub) { height: 40px; }
     .gd-row-btn {
@@ -568,8 +571,12 @@
 
       position() {
         const r = this.anchor.getBoundingClientRect();
-        this.el.style.top = `${Math.round(r.bottom + 4)}px`;
-        this.el.style.left = `${Math.round(Math.max(8, Math.min(r.left - 8, window.innerWidth - 360)))}px`;
+        const top = Math.round(r.bottom + 4);
+        this.el.style.top = `${top}px`;
+        this.el.style.maxHeight = `${Math.max(120, window.innerHeight - top - 8)}px`;
+        // Clamp within the window using the rendered width
+        const w = this.el.offsetWidth || 360;
+        this.el.style.left = `${Math.round(Math.max(8, Math.min(r.left - 8, window.innerWidth - w - 8)))}px`;
       },
 
       close() {
@@ -586,9 +593,10 @@
         if (!el) return;
         el.innerHTML = '';
         const actions = this.buildActions(data);
-        const row = ({ icon, iconHtml, label, sub, shortcut, onClick, disabled, extras, title, bold }) => {
+        requestAnimationFrame(() => { if (this.el === el) this.position(); });
+        const row = ({ icon, iconHtml, label, sub, shortcut, onClick, disabled, extras, title, bold, slots }) => {
           const r = document.createElement('div');
-          r.className = 'gd-row' + (disabled ? ' disabled' : '');
+          r.className = 'gd-row' + (disabled ? ' disabled' : '') + (slots === 1 ? ' one-slot' : '');
           if (title) r.title = title;
           r.innerHTML = `<span class="gd-row-icon">${iconHtml || gdIcon(icon)}</span>` +
             `<span class="gd-row-label${bold ? ' bold' : ''}">${gdEsc(label)}${sub ? `<span class="gd-row-sub">${gdEsc(sub)}</span>` : ''}</span>` +
@@ -596,7 +604,7 @@
             `<span class="gd-row-actions"></span>`;
           const act = r.querySelector('.gd-row-actions');
           // Fixed two action slots so shortcuts line up in every row
-          (extras || []).concat([{ spacer: true }, { spacer: true }]).slice(0, 2).forEach(x => {
+          (extras || []).concat([{ spacer: true }, { spacer: true }]).slice(0, slots || 2).forEach(x => {
             if (x.spacer) { const sp = document.createElement('span'); sp.className = 'gd-row-btn spacer'; act.appendChild(sp); return; }
             const b = document.createElement('button');
             b.className = 'gd-row-btn' + (x.on ? ' on' : '') + (x.hover ? ' hover' : '');
@@ -625,7 +633,7 @@
         };
         bots.forEach(a => row({
           iconHtml: a.bot.avatar ? `<img class="gd-avatar" src="${gdEsc(a.bot.avatar)}" alt="">` : null,
-          icon: 'bot', label: a.bot.name, shortcut: a.shortcut, title: a.bot.url, onClick: a.run,
+          icon: 'bot', label: a.bot.name, shortcut: a.shortcut, title: a.bot.url, onClick: a.run, slots: 1,
           extras: [a.bot.pinned
             ? { icon: 'pin', on: true, title: 'Unpin (on grok.com)', click: () => setPinned(a.bot, false) }
             : { icon: 'pin', title: 'Pin (on grok.com)', click: () => setPinned(a.bot, true) }]
@@ -820,16 +828,18 @@
           this.newTabButton.append(plus, menuBtn);
         }
         
-        // Add it to the tabs container
-        this.tabsContainer.appendChild(this.newTabButton);
+        // Keep it outside the scrolling strip, right after the right arrow
+        this.placeNewTabButton();
+      },
+
+      placeNewTabButton() {
+        const right = document.getElementById('tabs-scroll-right');
+        if (right && this.newTabButton.previousElementSibling !== right) right.after(this.newTabButton);
       },
       
       updateNewTabButtonPosition() {
         // Move the new tab button to the end of the tabs list
-        if (this.newTabButton && this.newTabButton.parentNode) {
-          this.newTabButton.parentNode.removeChild(this.newTabButton);
-        }
-        this.tabsContainer.appendChild(this.newTabButton);
+        if (this.newTabButton) this.placeNewTabButton();
         // Re-evaluate scroll buttons after tab changes
         this.updateScrollButtons();
       },
@@ -1138,8 +1148,12 @@
         const sc = this.scrollContainer;
         const canScrollLeft = sc.scrollLeft > 0;
         const canScrollRight = Math.ceil(sc.scrollLeft + sc.clientWidth) < sc.scrollWidth;
-        this.leftBtn.style.display = canScrollLeft ? 'inline-flex' : 'none';
-        this.rightBtn.style.display = canScrollRight ? 'inline-flex' : 'none';
+        // Arrows only when the strip overflows; disabled at either end
+        const overflow = sc.scrollWidth > sc.clientWidth + 1;
+        this.leftBtn.style.display = overflow ? 'inline-flex' : 'none';
+        this.rightBtn.style.display = overflow ? 'inline-flex' : 'none';
+        this.leftBtn.disabled = !canScrollLeft;
+        this.rightBtn.disabled = !canScrollRight;
       },
       
       activateTab(tabId) {
@@ -1161,6 +1175,11 @@
           if (tab.term) {
             requestAnimationFrame(() => { try { tab.fit.fit(); } catch (_) {} tab.term.focus(); });
           }
+          // Bring the active tab fully into view in the scrolling strip
+          requestAnimationFrame(() => {
+            try { tab.element.scrollIntoView({ inline: 'nearest', block: 'nearest', behavior: 'smooth' }); } catch (_) {}
+            setTimeout(() => this.updateScrollButtons(), 350);
+          });
         }
       },
       
