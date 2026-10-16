@@ -1,6 +1,6 @@
 {
   "name": "Grok-Desktop",
-  "version": "2.0.1",
+  "version": "2.0.2",
   "description": "Grok-Desktop application for Grok.com with tab support",
   "main": "src/main.js",
   "scripts": {

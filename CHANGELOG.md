@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on Keep a Changelog, and this project adheres to Semantic Versioning.
 
 
+## [2.0.2] - 2026-10-16 (Dragonified fork)
+
+### Fixed
+- **Bots list** - Show more is pressed with a full pointer/mouse event sequence, located anywhere after the Bots heading (not only inside nav/aside), and the scrape waits (MutationObserver, up to 5s per page, repeated) for more bots to load instead of stopping when the count is briefly stable. A short partial read no longer overwrites a larger cached list.
+
+### Added
+- **Diagnostics** - with the debug flag file (%APPDATA%\Grok-Desktop\usage-debug), each bot scrape logs the sidebar Bots section HTML, the toggle and each step, and grok.com fetch/XHR responses matching bot/agent/relay/graphql/connect, to usage-debug.log.
+
 ## [2.0.1] - 2026-10-16 (Dragonified fork)
 
 ### Added

@@ -795,12 +795,16 @@ const BOT_DOM_HELPERS = `
   const botPath = (a) => { try { const p = new URL(a.getAttribute('href'), location.href).pathname; return /^\\/bot\\/[^/?#]+/.test(p) ? p : null; } catch (_) { return null; } };
   const botLinks = () => [...document.querySelectorAll('a[href]')].filter(botPath);
   const leafText = (e) => (e.textContent || '').trim();
-  const heading = [...document.querySelectorAll('nav *, aside *')].find(e => !e.children.length && leafText(e) === 'Bots');
+  const diag = [];
+  const note = (k, v) => { try { diag.push([k, typeof v === 'string' ? v.slice(0, 4000) : v]); } catch (_) {} };
+  // The sidebar is not always a <nav>/<aside>: search the whole document
+  const heading = [...document.querySelectorAll('body *')].find(e => e.children.length <= 1 && leafText(e) === 'Bots' && !e.closest('a'));
   const after = (e) => !heading || (heading.compareDocumentPosition(e) & Node.DOCUMENT_POSITION_FOLLOWING);
   // "Show more" / "Show less" may be a button or a plain clickable element
   const findToggle = (label) => {
-    const leaf = [...document.querySelectorAll('nav *, aside *')].find(e => after(e) && leafText(e) === label && e.children.length <= 1);
-    return leaf ? (leaf.closest('button, [role="button"]') || leaf) : null;
+    // First matching toggle after the Bots heading (the Chats list may have its own)
+    const leaf = [...document.querySelectorAll('body *')].find(e => after(e) && e.children.length <= 1 && leafText(e).toLowerCase() === label.toLowerCase());
+    return leaf ? (leaf.closest('button, [role="button"], a') || leaf) : null;
   };
   // Wait until the number of bot links stops changing (or timeout)
   const settle = async (timeout = 2000) => {
@@ -812,14 +816,52 @@ const BOT_DOM_HELPERS = `
       await sleep(100);
     }
   };
-  const expand = async () => {
-    const more = findToggle('Show more');
-    if (!more) return false;
-    more.click();
-    await settle();
-    return true;
+  // Real pointer/mouse sequence; React handlers may sit on pointerdown or click
+  const press = (el) => {
+    const r = el.getBoundingClientRect();
+    const o = { bubbles: true, cancelable: true, composed: true, button: 0, buttons: 1, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, view: window };
+    try { el.scrollIntoView({ block: 'nearest' }); } catch (_) {}
+    el.dispatchEvent(new PointerEvent('pointerover', { ...o, pointerType: 'mouse' }));
+    el.dispatchEvent(new PointerEvent('pointerdown', { ...o, pointerType: 'mouse', isPrimary: true }));
+    el.dispatchEvent(new MouseEvent('mousedown', o));
+    el.dispatchEvent(new PointerEvent('pointerup', { ...o, buttons: 0, pointerType: 'mouse', isPrimary: true }));
+    el.dispatchEvent(new MouseEvent('mouseup', { ...o, buttons: 0 }));
+    el.click();
   };
-  const collapse = (expanded) => { if (expanded) { const less = findToggle('Show less'); if (less) less.click(); } };
+  // Show more can fetch the next page over the network: wait for the toggle
+  // to flip or the link count to grow (MutationObserver), not just settle.
+  const waitGrow = (before, timeout) => new Promise(resolve => {
+    const done = (why) => { obs.disconnect(); clearTimeout(t); resolve(why); };
+    const check = () => {
+      if (botLinks().length > before) done('grew');
+      else if (!findToggle('Show more') && findToggle('Show less')) done('flipped');
+    };
+    const obs = new MutationObserver(check);
+    obs.observe(document.body, { childList: true, subtree: true, characterData: true });
+    const t = setTimeout(() => done('timeout'), timeout);
+    check();
+  });
+  const expand = async () => {
+    note('heading', heading ? heading.outerHTML.slice(0, 300) : null);
+    if (heading) {
+      let sec = heading;
+      for (let i = 0; i < 4 && sec.parentElement && sec.parentElement.querySelectorAll('a[href*="/bot/"]').length < 1; i++) sec = sec.parentElement;
+      note('section', (sec.parentElement || sec).outerHTML.replace(/\s(style|class)="[^"]*"/g, '').slice(0, 6000));
+    }
+    let expanded = false;
+    for (let round = 0; round < 6; round++) {
+      const more = findToggle('Show more');
+      note('round', { round, links: botLinks().length, toggle: more ? more.outerHTML.slice(0, 400) : null });
+      if (!more) break;
+      const before = botLinks().length;
+      press(more);
+      expanded = true;
+      note('after-press', { why: await waitGrow(before, 5000), links: botLinks().length });
+      await settle(1500);
+    }
+    return expanded;
+  };
+  const collapse = (expanded) => { if (expanded) { const less = findToggle('Show less'); if (less) press(less); } };
   // A bot is pinned when the nearest section label above it (in the Bots area) is "Pinned"
   // Section labels ("Pinned", "Unassigned", custom sections) are often inside
   // collapse buttons, so only bot links themselves are excluded; counters and
@@ -863,7 +905,8 @@ const SCRAPE_BOTS_JS = `(async () => {${BOT_DOM_HELPERS}
     out.push({ name, url, avatar: img && /^https:/.test(img.src) ? img.src : null, pinned: isPinned(botPath(a)) });
   });
   collapse(expanded);
-  return out.slice(0, 50);
+  note('result', { count: out.length, names: out.map(b => b.name) });
+  return { bots: out.slice(0, 50), diag, visible: document.visibilityState };
 })()`;
 
 // Pin/unpin a bot using grok.com's own bot menu (right-click / "..." -> Pin),
@@ -920,13 +963,16 @@ async function getBots(fresh) {
   const wc = fresh && findGrokTab();
   if (wc) {
     try {
-      const bots = await Promise.race([wc.executeJavaScript(SCRAPE_BOTS_JS), new Promise(r => setTimeout(() => r(null), 4000))]);
-      if (Array.isArray(bots) && bots.length) {
+      const res = await Promise.race([wc.executeJavaScript(SCRAPE_BOTS_JS), new Promise(r => setTimeout(() => r(null), 30000))]);
+      logUsageDebug({ botScrape: res || 'timeout' });
+      const bots = res && res.bots;
+      // Do not let a partial read (sidebar still loading) shrink a bigger cache
+      const cached = readSettings().bots;
+      if (Array.isArray(bots) && bots.length && !(Array.isArray(cached) && bots.length < cached.length && bots.length <= 3)) {
         writeSettings({ bots });
-        logUsageDebug({ bots });
         return bots;
       }
-    } catch (_) {}
+    } catch (e) { logUsageDebug({ botScrapeError: e.message }); }
   }
   const cached = readSettings().bots;
   return Array.isArray(cached) ? cached.filter(b => b && isInAppUrl(b.url)) : [];
@@ -1043,6 +1089,27 @@ app.on('before-quit', () => { for (const p of ptys.values()) { try { p.kill(); }
 // it, unlike chats) and makes middle-click / Ctrl+click on bot links open a
 // new tab. Injected into grok.com pages; window.open is routed to a new
 // in-app tab by setWindowOpenHandler.
+// Debug only: record grok.com fetch/XHR responses whose URL mentions bots/agents
+const NET_CAPTURE_JS = `(() => {
+  if (window.__gdNetCap) return; window.__gdNetCap = true;
+  const RE = /bot|agent|relay|graphql|connect/i;
+  const emit = (url, status, body) => console.log('[gd-net] ' + JSON.stringify({ url: String(url).slice(0, 300), status, body: String(body || '').slice(0, 3000) }));
+  const of = window.fetch;
+  window.fetch = async function (input, init) {
+    const res = await of.apply(this, arguments);
+    try { const u = typeof input === 'string' ? input : input.url; if (RE.test(u)) res.clone().text().then(t => emit(u, res.status, t)).catch(() => {}); } catch (_) {}
+    return res;
+  };
+  const oo = XMLHttpRequest.prototype.open;
+  XMLHttpRequest.prototype.open = function (m, u) { this.__gdU = u; return oo.apply(this, arguments); };
+  const os = XMLHttpRequest.prototype.send;
+  XMLHttpRequest.prototype.send = function () {
+    if (RE.test(this.__gdU || '')) this.addEventListener('loadend', () => { try { emit(this.__gdU, this.status, typeof this.response === 'string' ? this.response : '[binary]'); } catch (_) {} });
+    return os.apply(this, arguments);
+  };
+})()`;
+const usageDebugOn = () => { try { return process.env.GROK_DESKTOP_USAGE_DEBUG === '1' || fs.existsSync(path.join(app.getPath('userData'), 'usage-debug')); } catch (_) { return false; } };
+
 const BOT_MENU_INJECT_JS = `(() => {
   if (window.__gdBotMenu) return;
   window.__gdBotMenu = true;
@@ -1109,6 +1176,14 @@ app.on('web-contents-created', (_event, contents) => {
     try {
       if (new URL(contents.getURL()).hostname === 'grok.com') {
         contents.executeJavaScript(BOT_MENU_INJECT_JS).catch(() => {});
+        if (usageDebugOn() && !contents.__gdNetHooked) {
+          contents.__gdNetHooked = true;
+          contents.on('console-message', (...args) => {
+            const msg = typeof args[2] === 'string' ? args[2] : (args[0] && args[0].message) || '';
+            if (msg.startsWith('[gd-net] ')) logUsageDebug({ net: msg.slice(9).replace(/("(?:access_?token|token|authorization|cookie|sso)"\s*:\s*)"[^"]*"/gi, '$1"[redacted]"') });
+          });
+        }
+        if (usageDebugOn()) contents.executeJavaScript(NET_CAPTURE_JS).catch(() => {});
         scheduleBotRefresh(4000);
       }
     } catch (_) {}
